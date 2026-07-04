@@ -19,6 +19,7 @@ import urllib.error
 
 # ================= 설정 (여기만 바꾸면 됨) =================
 STREAMER_ID = "allblack1019"      # SOOP 방송국 주소 sooplive.com/station/<여기>
+SINCE = "2026-01-01"              # 이 날짜 이후 방송만 표시. 전체를 보려면 "" (빈 문자열)
 # =========================================================
 
 PER_PAGE = 60
@@ -82,6 +83,8 @@ def build(items, bid):
             continue
         dur = ucc.get("total_file_duration") or 0
         start = end - datetime.timedelta(milliseconds=dur)
+        if SINCE and start.strftime("%Y-%m-%d") < SINCE:
+            continue          # 지정한 날짜 이전 방송은 제외
         tno = it.get("title_no")
         thumb = ucc.get("thumb") or ""
         if thumb.startswith("//"):
