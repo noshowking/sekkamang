@@ -288,7 +288,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 <div id="bgmWrap">
   <div id="bgmCtl">
     <button id="bgmToggle" class="off" title="음악 켜기/끄기">♪</button>
-    <input id="bgmVol" type="range" min="0" max="100" value="22" title="볼륨">
+    <input id="bgmVol" type="range" min="0" max="100" value="9" title="볼륨">
   </div>
   <div id="bgmNote">AI로 생성(합성)된 음원입니다</div>
 </div>
