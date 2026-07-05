@@ -181,6 +181,8 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .stat{background:var(--panel);border:1px solid var(--line);border-radius:12px;
         padding:12px 16px;min-width:110px;flex:1}
   .stat .n{font-size:22px;font-weight:700}
+  .stat .n.high{color:#22c55e}.stat .n.mid{color:#f59e0b}.stat .n.low{color:#f87171}
+  .stat[title]{cursor:help}
   .stat .l{font-size:12px;color:var(--muted);margin-top:2px}
   .calbar{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px}
   .calbar .title{font-size:18px;font-weight:700;min-width:150px;text-align:center}
@@ -321,20 +323,107 @@ const firstDate=allDates[0], lastDate=allDates[allDates.length-1];
 function pad(n){return (n<10?"0":"")+n;}
 function fmtDur(ms){const min=Math.round(ms/60000);const h=Math.floor(min/60),m=min%60;
   return h>0?(h+"시간 "+(m?m+"분":"")).trim():m+"분";}
+// 특정 달(연,월)의 방송일 수 / 방송시간 합
+function monthStats(y,m){
+  let days=0, ms2=0;
+  for(const d of allDates){const dt=new Date(d+"T00:00:00"); if(dt.getFullYear()===y&&dt.getMonth()===m) days++;}
+  for(const b of DATA.broadcasts){const dt=new Date(b.date+"T00:00:00"); if(dt.getFullYear()===y&&dt.getMonth()===m) ms2+=(b.duration_ms||0);}
+  return {days, hours:Math.round(ms2/3600000)};
+}
+function updateMonthStats(){
+  const s=monthStats(view.getFullYear(), view.getMonth());
+  const d=document.getElementById('statDays'), h=document.getElementById('statHours');
+  if(d) d.textContent=s.days;
+  if(h) h.textContent=s.hours+"h";
+}
 (function stats(){
+  const bset=new Set(allDates);
   const totalBroad=DATA.broadcasts.length, totalDays=allDates.length;
   const totalMs=DATA.broadcasts.reduce((s,b)=>s+(b.duration_ms||0),0);
   const totalHours=Math.round(totalMs/3600000);
-  let best=0,cur=0,prev=null;
-  for(const d of allDates){const dt=new Date(d+"T00:00:00");
-    if(prev&&(dt-prev)===86400000)cur++;else cur=1;best=Math.max(best,cur);prev=dt;}
+  // 최장 연속 방송일(연속 뱅송일) / 최장 연속 미방송일(연속 노쇼일)
+  let maxOn=0,maxOff=0,rOnS=0,rOffS=0;
+  {const ff=new Date(firstDate+"T00:00:00").getTime();
+   const td0=new Date();td0.setHours(0,0,0,0);const tdt=td0.getTime();
+   const y2=(t)=>{const x=new Date(t);return x.getFullYear()+"-"+pad(x.getMonth()+1)+"-"+pad(x.getDate());};
+   for(let t=ff;t<=tdt;t+=86400000){
+     if(bset.has(y2(t))){rOnS++;rOffS=0;if(rOnS>maxOn)maxOn=rOnS;}
+     else{rOffS++;rOnS=0;if(rOffS>maxOff)maxOff=rOffS;}
+   }}
+
+  // ---- 내일 방송 예측 (과거 요일별 + 최근 빈도 기반 추정) ----
+  const dayMs=86400000;
   const today=new Date();today.setHours(0,0,0,0);
-  const ago=new Date(today.getTime()-29*86400000);
-  const recent=allDates.filter(d=>{const x=new Date(d+"T00:00:00");return x>=ago&&x<=today;}).length;
-  const items=[[totalDays.toLocaleString(),"방송한 날"],[totalBroad.toLocaleString(),"총 방송 수"],
-    [totalHours.toLocaleString()+"h","누적 방송시간"],[best,"최장 연속(일)"],[recent+"/30","최근 30일"]];
+  const first=new Date(firstDate+"T00:00:00");
+  const ymdL=(dt)=>dt.getFullYear()+"-"+pad(dt.getMonth()+1)+"-"+pad(dt.getDate());
+  const wdTot=[0,0,0,0,0,0,0], wdOn=[0,0,0,0,0,0,0];
+  for(let t=first.getTime(); t<=today.getTime(); t+=dayMs){
+    const dt=new Date(t), wd=dt.getDay();
+    wdTot[wd]++; if(bset.has(ymdL(dt))) wdOn[wd]++;
+  }
+  const tomorrow=new Date(today.getTime()+dayMs), twd=tomorrow.getDay();
+  const wdRate = wdTot[twd] ? wdOn[twd]/wdTot[twd] : 0;
+  let rTot=0,rOn=0;
+  for(let t=today.getTime()-dayMs; t>=first.getTime() && rTot<30; t-=dayMs){
+    rTot++; if(bset.has(ymdL(new Date(t)))) rOn++;
+  }
+  const recentRate = rTot ? rOn/rTot : 0;
+  let wTot=0,wOn=0;
+  for(let t=today.getTime(); t>=first.getTime() && wTot<8; t-=dayMs){
+    const dt=new Date(t); if(dt.getDay()===twd){wTot++; if(bset.has(ymdL(dt))) wOn++;}
+  }
+  const wdRecent = wTot ? wOn/wTot : wdRate;
+  // 연속 패턴: 방송한 다음날 / 안 한 다음날에 방송할 확률
+  let a1=0,b1=0,a0=0,b0=0;
+  for(let t=first.getTime(); t<today.getTime(); t+=dayMs){
+    const cur=bset.has(ymdL(new Date(t))), nxt=bset.has(ymdL(new Date(t+dayMs)));
+    if(cur){b1++; if(nxt)a1++;} else {b0++; if(nxt)a0++;}
+  }
+  const todayOn=bset.has(ymdL(today));
+  const transProb = todayOn ? (b1?a1/b1:recentRate) : (b0?a0/b0:recentRate);
+  // 방송 길이 조건부: 오늘 길게/짧게 방송했으면 내일 방송 확률이 어떻게 달랐나
+  const dayDur={};
+  for(const bb of DATA.broadcasts){dayDur[bb.date]=(dayDur[bb.date]||0)+(bb.duration_ms||0);}
+  const ddv=Object.values(dayDur).sort((x,y)=>x-y);
+  const medDayDur=ddv.length?ddv[Math.floor(ddv.length/2)]:0;
+  let ln=0,ld=0,sn=0,sd=0;
+  for(let t=first.getTime(); t<today.getTime(); t+=dayMs){
+    const ds=ymdL(new Date(t)); if(!bset.has(ds)) continue;
+    const nxt=bset.has(ymdL(new Date(t+dayMs)));
+    if((dayDur[ds]||0)>=medDayDur){ld++; if(nxt)ln++;} else {sd++; if(nxt)sn++;}
+  }
+  const pLong=ld?ln/ld:transProb, pShort=sd?sn/sd:transProb;
+  let durTrans=transProb;
+  if(todayOn) durTrans=((dayDur[ymdL(today)]||0)>=medDayDur)?pLong:pShort;
+  let prob=Math.round(100*(0.30*wdRecent + 0.20*wdRate + 0.16*recentRate + 0.34*durTrans));
+  prob=Math.max(2,Math.min(98,prob));
+  const wdN=['일','월','화','수','목','금','토'];
+  const lvl = prob>=65?'high':prob>=45?'mid':'low';
+  const predWord = lvl==='high'?'뱅온 가능성 높음':lvl==='mid'?'지각할 가능성 높음':'노쇼할 가능성 높음';
+
+  // ---- 예상 시작 시각 (최근 방송 시작시간 중앙값, 새벽은 +24h 보정) ----
+  const startMin=(b)=>{const p=b.start.slice(11).split(':');let h=+p[0],m=+p[1],v=h*60+m;if(h<12)v+=1440;return v;};
+  const recentB=DATA.broadcasts.slice(-30);
+  const mins=recentB.map(startMin).sort((x,y)=>x-y);
+  let predStart='-';
+  if(mins.length){const md=mins[Math.floor(mins.length/2)]%1440;predStart=pad(Math.floor(md/60))+':'+pad(md%60);}
+  const durs=recentB.map(b=>b.duration_ms).sort((x,y)=>x-y);
+  const mdur=durs.length?durs[Math.floor(durs.length/2)]:0;
+  const dh=Math.floor(mdur/3600000),dm=Math.round((mdur%3600000)/60000);
+  const durLabel=(dh?dh+'시간':'')+(dm?' '+dm+'분':'')||'-';
+
+  const iv=new Date(lastDate+"T00:00:00");
+  const ms0=monthStats(iv.getFullYear(), iv.getMonth());
+  const items=[
+    [ms0.days,"방송한 날","","이 달에 방송한 날 수 (달을 넘기면 바뀝니다)","statDays"],
+    [ms0.hours+"h","누적 방송시간","","이 달 방송 시간 합계 (달을 넘기면 바뀝니다)","statHours"],
+    [maxOn,"연속 뱅송일","","최장 연속 방송일",""],
+    [maxOff,"연속 노쇼일","","방송을 켜지 않은 최장 연속일",""],
+    [prob+"%",`내일(${wdN[twd]}) ${predWord}`,lvl,"과거 요일별·최근 빈도·연속 패턴·방송 길이로 계산한 추정치 (참고용)",""],
+    [predStart,"예상 시작 시각","","보통 이 시각쯤 켜요 · 평균 방송길이 "+durLabel,""],
+  ];
   document.getElementById('stats').innerHTML=
-    items.map(([n,l])=>`<div class="stat"><div class="n">${n}</div><div class="l">${l}</div></div>`).join('');
+    items.map(([n,l,c,t,id])=>`<div class="stat"${t?` title="${t}"`:''}><div class="n ${c||''}"${id?` id="${id}"`:''}>${n}</div><div class="l">${l}</div></div>`).join('');
 })();
 document.getElementById('nick').textContent=DATA.nick||DATA.bid;
 document.getElementById('sub').innerHTML=`@${DATA.bid} · 방송 기록 ${firstDate} ~ ${lastDate}`;
@@ -370,6 +459,7 @@ function render(){
   }
   document.getElementById('cal').innerHTML=cells.join('');
   document.querySelectorAll('.cell.on').forEach(c=>c.addEventListener('click',()=>showDetail(c.dataset.d)));
+  updateMonthStats();
 }
 function escapeHtml(s){return (s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
 function showDetail(ds){
