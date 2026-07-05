@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-SOOP 방송 달력 - 자동 사이트 빌더
+새까망 방송 달력 - 자동 사이트 빌더
 =================================
 GitHub Actions에서 주기적으로 실행되어 SOOP 방송(다시보기) 기록을 크롤링하고,
 public/index.html 을 새로 만들어 GitHub Pages로 배포합니다.
@@ -27,6 +27,7 @@ SLASH_TIME = 4.0                  # 영상에서 화면이 찢기는 시점(초)
 REST_DAYS = [1, 5]                # 정기 휴방 요일 (일0 월1 화2 수3 목4 금5 토6). 월·금 휴방 → [1,5]
 REST_PENALTY = 0.5               # 정기 휴방 요일이면 예측 확률에 곱하는 값(0~1). 낮출수록 노쇼쪽
 MAKEUP_BOOST = 1.8               # 휴방일인데 전날(정규 방송일)에 방송을 안 했으면 '대타 방송' 확률 배수
+DAY_START_HOUR = 7               # 이 시각 이전(새벽)에 '시작'한 방송은 전날 방송으로 간주(확률 계산용). 달력 표시는 업로드일 그대로.
 # =========================================================
 
 PER_PAGE = 60
@@ -90,7 +91,9 @@ def build(items, bid):
             continue
         dur = ucc.get("total_file_duration") or 0
         start = end - datetime.timedelta(milliseconds=dur)
-        day_str = end.strftime("%Y-%m-%d")   # VOD 업로드(등록) 일자 기준
+        day_str = end.strftime("%Y-%m-%d")   # VOD 업로드(등록) 일자 기준 (달력 표시용)
+        # 확률 계산용 '방송일': 새벽(DAY_START_HOUR 이전)에 '시작'한 방송은 전날 방송으로 간주
+        pdate = (start - datetime.timedelta(hours=DAY_START_HOUR)).strftime("%Y-%m-%d")
         if SINCE and day_str < SINCE:
             continue          # 지정한 날짜 이전 방송은 제외
         tno = it.get("title_no")
@@ -105,6 +108,7 @@ def build(items, bid):
         cnt = it.get("count") or {}
         out.append({
             "date": day_str,
+            "pdate": pdate,
             "start": start.strftime("%Y-%m-%d %H:%M"),
             "end": end.strftime("%Y-%m-%d %H:%M"),
             "duration_ms": dur,
@@ -186,8 +190,9 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   header.top .who h1 a{color:inherit;text-decoration:none}
   header.top .who h1 a:hover{text-decoration:underline;color:#fff}
   header.top .who .sub{color:var(--muted);font-size:13px;margin-top:4px}
-  .logo{position:fixed;top:14px;left:14px;height:144px;width:auto;z-index:70;
+  .logo{position:fixed;top:14px;left:14px;height:144px;width:auto;z-index:30;
         filter:drop-shadow(0 3px 12px rgba(0,0,0,.5))}
+  /* z-index 30 < 인트로(40): 인트로가 화면을 덮는 동안 좌상단 로고는 가려지고, 달력에 들어오면 나타남 */
   @media(max-width:1180px){.logo{position:static;height:96px;margin:0 0 14px}}
   @media(max-width:560px){.logo{height:64px}}
   .stats{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:22px}
@@ -388,7 +393,8 @@ function updateMonthStats(){
   set('statOn',s.maxOn); set('statOff',s.maxOff);
 }
 (function stats(){
-  const bset=new Set(allDates);
+  // 예측 전용 방송일 집합: 새벽 시작분은 전날로 잡힌 pdate 기준 (달력/월간통계는 date 기준 유지)
+  const bset=new Set(DATA.broadcasts.map(b=>b.pdate||b.date));
   const totalBroad=DATA.broadcasts.length, totalDays=allDates.length;
   const totalMs=DATA.broadcasts.reduce((s,b)=>s+(b.duration_ms||0),0);
   const totalHours=Math.round(totalMs/3600000);
@@ -412,7 +418,7 @@ function updateMonthStats(){
   const pAfterOn=b1?a1/b1:0.5, pAfterOff=b0?a0/b0:0.5;
   // 방송 길이 조건부 통계
   const dayDur={};
-  for(const bb of DATA.broadcasts){dayDur[bb.date]=(dayDur[bb.date]||0)+(bb.duration_ms||0);}
+  for(const bb of DATA.broadcasts){const k=bb.pdate||bb.date; dayDur[k]=(dayDur[k]||0)+(bb.duration_ms||0);}
   const ddv=Object.values(dayDur).sort((x,y)=>x-y);
   const medDayDur=ddv.length?ddv[Math.floor(ddv.length/2)]:0;
   let ln=0,ld=0,sn=0,sd=0;
@@ -471,7 +477,7 @@ function updateMonthStats(){
   const fmtHM=(mn)=>{if(mn==null)return '-';const v=((mn%1440)+1440)%1440;return pad(Math.floor(v/60))+':'+pad(v%60);};
   const overallMed=med(DATA.broadcasts.slice(-30).map(startMin));
   const wdStarts=[[],[],[],[],[],[],[]];
-  for(const b of DATA.broadcasts){const w=new Date(b.date+"T00:00:00").getDay(); wdStarts[w].push(startMin(b));}
+  for(const b of DATA.broadcasts){const w=new Date((b.pdate||b.date)+"T00:00:00").getDay(); wdStarts[w].push(startMin(b));}
   const predStartFor=(w)=>{const arr=wdStarts[w]; return fmtHM(arr.length>=3?med(arr):overallMed);};
   const durs=DATA.broadcasts.slice(-30).map(b=>b.duration_ms).sort((x,y)=>x-y);
   const mdur=durs.length?durs[Math.floor(durs.length/2)]:0;
@@ -663,3 +669,4 @@ render();
 
 if __name__ == "__main__":
     main()
+# rev: 새벽 방송 확률예외(pdate) + 인트로 로고 z-index 조정
