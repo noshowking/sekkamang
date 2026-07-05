@@ -436,16 +436,21 @@ function updateMonthStats(){
     todayCard=[pT.prob+"%",`오늘(${wdN[pT.wd]}) ${pT.word}`+(pT.rest?' · 정기휴방':''),pT.lvl,"오늘 방송 확률 (참고용)",""];
   }
 
-  // ---- 예상 시작 시각 (최근 방송 시작시간 중앙값, 새벽은 +24h 보정) ----
+  // ---- 예상 시작 시각 (요일별 시작시간 중앙값, 새벽은 +24h 보정) ----
   const startMin=(b)=>{const p=b.start.slice(11).split(':');let h=+p[0],m=+p[1],v=h*60+m;if(h<12)v+=1440;return v;};
-  const recentB=DATA.broadcasts.slice(-30);
-  const mins=recentB.map(startMin).sort((x,y)=>x-y);
-  let predStart='-';
-  if(mins.length){const md=mins[Math.floor(mins.length/2)]%1440;predStart=pad(Math.floor(md/60))+':'+pad(md%60);}
-  const durs=recentB.map(b=>b.duration_ms).sort((x,y)=>x-y);
+  const med=(arr)=>{if(!arr.length)return null;const s=arr.slice().sort((x,y)=>x-y);return s[Math.floor(s.length/2)];};
+  const fmtHM=(mn)=>{if(mn==null)return '-';const v=((mn%1440)+1440)%1440;return pad(Math.floor(v/60))+':'+pad(v%60);};
+  const overallMed=med(DATA.broadcasts.slice(-30).map(startMin));
+  const wdStarts=[[],[],[],[],[],[],[]];
+  for(const b of DATA.broadcasts){const w=new Date(b.date+"T00:00:00").getDay(); wdStarts[w].push(startMin(b));}
+  const predStartFor=(w)=>{const arr=wdStarts[w]; return fmtHM(arr.length>=3?med(arr):overallMed);};
+  const durs=DATA.broadcasts.slice(-30).map(b=>b.duration_ms).sort((x,y)=>x-y);
   const mdur=durs.length?durs[Math.floor(durs.length/2)]:0;
   const dh=Math.floor(mdur/3600000),dm=Math.round((mdur%3600000)/60000);
   const durLabel=(dh?dh+'시간':'')+(dm?' '+dm+'분':'')||'-';
+  const todayWd=today.getDay(), tomoWd=tomorrow.getDay();
+  const startTodayCard=[predStartFor(todayWd),`오늘(${wdN[todayWd]}) 예상 시작`,"",wdN[todayWd]+"요일 시작시각 중앙값 · 평균 방송길이 "+durLabel,""];
+  const startTomoCard=[predStartFor(tomoWd),`내일(${wdN[tomoWd]}) 예상 시작`,"",wdN[tomoWd]+"요일 시작시각 중앙값 · 평균 방송길이 "+durLabel,""];
 
   const iv=new Date(lastDate+"T00:00:00");
   const ms0=monthStats(iv.getFullYear(), iv.getMonth());
@@ -456,7 +461,8 @@ function updateMonthStats(){
     [ms0.maxOff,"연속 노쇼일","","이 달 방송을 켜지 않은 최장 연속일 (달을 넘기면 바뀝니다)","statOff"],
     todayCard,
     [prob+"%",predLabel,lvl,"요일별·최근 빈도·연속 패턴·방송 길이 + 정기휴방(월·금) 반영 추정치 (참고용)",""],
-    [predStart,"예상 시작 시각","","보통 이 시각쯤 켜요 · 평균 방송길이 "+durLabel,""],
+    startTodayCard,
+    startTomoCard,
   ];
   document.getElementById('stats').innerHTML=
     items.map(([n,l,c,t,id])=>`<div class="stat ${c||''}"${t?` title="${t}"`:''}><div class="n"${id?` id="${id}"`:''}>${n}</div><div class="l">${l}</div></div>`).join('');
