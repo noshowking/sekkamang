@@ -189,6 +189,9 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   header.top .who h1 a{color:inherit;text-decoration:none}
   header.top .who h1 a:hover{text-decoration:underline;color:#fff}
   header.top .who .sub{color:var(--muted);font-size:13px;margin-top:4px}
+  .logo{display:block;height:72px;width:auto;max-width:100%;margin:0 0 16px;
+        filter:drop-shadow(0 2px 10px rgba(0,0,0,.45))}
+  @media(max-width:560px){.logo{height:54px}}
   .stats{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:22px}
   @media(max-width:520px){.stats{grid-template-columns:repeat(2,1fr)}}
   .stat{background:var(--panel);border:1px solid var(--line);border-radius:12px;
@@ -277,6 +280,17 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     to{opacity:1;transform:translate(-50%,-50%) scale(1)}}
   @keyframes floaty{0%,100%{transform:translate(-50%,-50%) translateY(0)}50%{transform:translate(-50%,-50%) translateY(-9px)}}
   #enterBtn:hover{filter:brightness(1.08)}
+  /* 인트로 로고 (START 위쪽, 살랑살랑) */
+  #introLogo{position:absolute;left:50%;top:15%;transform:translateX(-50%);
+    width:min(62vw,360px);height:auto;z-index:6;opacity:0;pointer-events:none;
+    filter:drop-shadow(0 4px 16px rgba(0,0,0,.5));transition:opacity .6s ease}
+  #intro.cut #introLogo{opacity:1;animation:logoWobble 3s ease-in-out infinite}
+  @keyframes logoWobble{
+    0%,100%{transform:translateX(-50%) translateY(0) rotate(-2deg)}
+    25%{transform:translateX(-50%) translateY(-7px) rotate(1.5deg)}
+    50%{transform:translateX(-50%) translateY(3px) rotate(2deg)}
+    75%{transform:translateX(-50%) translateY(-3px) rotate(-1deg)}
+  }
   #intro.gone{display:none}
   /* 배경음악 컨트롤 (우측 상단) */
   #bgmWrap{position:fixed;top:14px;right:14px;z-index:80;display:flex;flex-direction:column;align-items:flex-end;gap:5px}
@@ -309,11 +323,13 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   <canvas id="tearA" class="tear"></canvas>
   <canvas id="tearB" class="tear"></canvas>
   <div id="iflash"></div>
+  <img id="introLogo" src="assets/logo.png" alt="" onerror="this.style.display='none'">
   <div id="ihint">화면을 클릭하세요</div>
   <button id="enterBtn">START</button>
 </div>
 
 <div class="wrap">
+  <img class="logo" src="assets/logo.png" alt="새까망이 올까 말까?" onerror="this.style.display='none'">
   <header class="top">
     <img id="pf" alt="">
     <div class="who">
