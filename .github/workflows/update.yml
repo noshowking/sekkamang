@@ -2,8 +2,8 @@ name: Update SOOP Calendar
 
 on:
   schedule:
-    - cron: '30 */1 * * *'    # 1시간마다 자동 실행 (정각 혼잡 회피 위해 :30분)
-  workflow_dispatch:           # GitHub에서 수동 실행 버튼
+    - cron: '*/30 * * * *'     # 30분마다 자동 실행
+  workflow_dispatch:           # 수동 실행 가능
 
 permissions:
   contents: read
