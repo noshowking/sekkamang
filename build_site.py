@@ -26,6 +26,8 @@ BGM_FILE = "bgm.mp3"              # 배경음악 (assets/ 폴더에 넣기)
 SLASH_TIME = 4.0                  # 영상에서 화면이 찢기는 시점(초)
 REST_DAYS = [1, 5]                # 정기 휴방 요일 (일0 월1 화2 수3 목4 금5 토6). 월·금 휴방 → [1,5]
 REST_PENALTY = 0.5               # 정기 휴방 요일이면 예측 확률에 곱하는 값(0~1). 낮출수록 노쇼쪽
+DAY_START_HOUR = 6               # 이 시각(새벽) 이전에 켠 방송은 '전날' 방송으로 집계 (하루 경계)
+MAKEUP_BOOST = 1.8               # 휴방일인데 전날(정규 방송일)에 방송을 안 했으면 '대타 방송' 확률 배수
 # =========================================================
 
 PER_PAGE = 60
@@ -89,7 +91,9 @@ def build(items, bid):
             continue
         dur = ucc.get("total_file_duration") or 0
         start = end - datetime.timedelta(milliseconds=dur)
-        if SINCE and start.strftime("%Y-%m-%d") < SINCE:
+        # 새벽(DAY_START_HOUR 이전)에 켠 방송은 전날 방송으로 집계
+        day_str = (start - datetime.timedelta(hours=DAY_START_HOUR)).strftime("%Y-%m-%d")
+        if SINCE and day_str < SINCE:
             continue          # 지정한 날짜 이전 방송은 제외
         tno = it.get("title_no")
         thumb = ucc.get("thumb") or ""
@@ -102,7 +106,7 @@ def build(items, bid):
             profile = ("https:" + pi) if pi.startswith("//") else pi
         cnt = it.get("count") or {}
         out.append({
-            "date": start.strftime("%Y-%m-%d"),
+            "date": day_str,
             "start": start.strftime("%Y-%m-%d %H:%M"),
             "end": end.strftime("%Y-%m-%d %H:%M"),
             "duration_ms": dur,
@@ -136,6 +140,8 @@ def main():
     html = html.replace("__SLASH__", str(SLASH_TIME))
     html = html.replace("__RESTDAYS__", json.dumps(REST_DAYS))
     html = html.replace("__RESTPENALTY__", str(REST_PENALTY))
+    html = html.replace("__DAYSTART__", str(DAY_START_HOUR))
+    html = html.replace("__MAKEUP__", str(MAKEUP_BOOST))
     html = html.replace("/*__DATA__*/null",
                         json.dumps(payload, ensure_ascii=False))
     with open(os.path.join(OUT_DIR, "index.html"), "w", encoding="utf-8") as f:
@@ -180,6 +186,8 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   header.top img{width:64px;height:64px;border-radius:50%;object-fit:cover;
        background:var(--panel2);border:1px solid var(--line)}
   header.top .who h1{margin:0;font-size:22px}
+  header.top .who h1 a{color:inherit;text-decoration:none}
+  header.top .who h1 a:hover{text-decoration:underline;color:#fff}
   header.top .who .sub{color:var(--muted);font-size:13px;margin-top:4px}
   .stats{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:22px}
   @media(max-width:520px){.stats{grid-template-columns:repeat(2,1fr)}}
@@ -338,6 +346,8 @@ const byDate={};
 for(const b of DATA.broadcasts){(byDate[b.date]=byDate[b.date]||[]).push(b);}
 const allDates=Object.keys(byDate).sort();
 const firstDate=allDates[0], lastDate=allDates[allDates.length-1];
+const DAY_START=__DAYSTART__;   // 하루 경계(새벽 이 시각 전이면 아직 '어제')
+function bToday(){const d=new Date(Date.now()-DAY_START*3600000);d.setHours(0,0,0,0);return d;}
 function pad(n){return (n<10?"0":"")+n;}
 function fmtDur(ms){const min=Math.round(ms/60000);const h=Math.floor(min/60),m=min%60;
   return h>0?(h+"시간 "+(m?m+"분":"")).trim():m+"분";}
@@ -345,7 +355,7 @@ function fmtDur(ms){const min=Math.round(ms/60000);const h=Math.floor(min/60),m=
 function monthStats(y,m){
   const bset=new Set(allDates);
   const fF=new Date(firstDate+"T00:00:00").getTime();
-  const td=new Date(); td.setHours(0,0,0,0);
+  const td=bToday();
   let s=new Date(y,m,1).getTime(); if(fF>s)s=fF;
   let e=new Date(y,m+1,0).getTime(); if(td.getTime()<e)e=td.getTime();
   const y2=(t)=>{const x=new Date(t);return x.getFullYear()+"-"+pad(x.getMonth()+1)+"-"+pad(x.getDate());};
@@ -372,7 +382,7 @@ function updateMonthStats(){
 
   // ---- 내일 방송 예측 (과거 요일별 + 최근 빈도 기반 추정) ----
   const dayMs=86400000;
-  const today=new Date();today.setHours(0,0,0,0);
+  const today=bToday();
   const first=new Date(firstDate+"T00:00:00");
   const ymdL=(dt)=>dt.getFullYear()+"-"+pad(dt.getMonth()+1)+"-"+pad(dt.getDate());
   const wdTot=[0,0,0,0,0,0,0], wdOn=[0,0,0,0,0,0,0];
@@ -419,15 +429,19 @@ function updateMonthStats(){
     p=Math.max(2,Math.min(98,p));
     const rest=REST_DAYS.indexOf(twd)>=0;
     if(rest) p=Math.max(2, Math.round(p*__RESTPENALTY__));
+    // 대타 방송: 휴방일인데 전날(정규 방송일)에 방송을 안 했으면 확률 ↑
+    const prevRest=REST_DAYS.indexOf(prev.getDay())>=0;
+    const makeup = rest && !prevRest && !prevOn;
+    if(makeup) p=Math.min(98, Math.round(p*__MAKEUP__));
     const lv=p>=65?'high':p>=45?'mid':'low';
     const word=lv==='high'?'뱅온 가능성 높음':lv==='mid'?'지각할 가능성 높음':'노쇼할 가능성 높음';
-    return {prob:p, lvl:lv, word, rest, wd:twd};
+    return {prob:p, lvl:lv, word, rest, makeup, wd:twd};
   }
 
   const tomorrow=new Date(today.getTime()+dayMs);
   const pTom=predict(tomorrow);
   const prob=pTom.prob, lvl=pTom.lvl, twd=pTom.wd;
-  const predLabel = `내일(${wdN[twd]}) ${pTom.word}`+(pTom.rest?' · 정기휴방':'');
+  const predLabel = `내일(${wdN[twd]}) ${pTom.word}`+(pTom.rest?(pTom.makeup?' · 정기휴방(대타 가능)':' · 정기휴방'):'');
   // 오늘 카드: 이미 방송했으면 확정 표시, 아니면 확률 예측
   const todayHas=bset.has(ymdL(today));
   let todayCard;
@@ -466,13 +480,13 @@ function updateMonthStats(){
   // 오늘 카드: 확률 + 예상 시작
   let tBig,tLine,tLvl;
   if(todayHas){ tBig="뱅온 ✓"; tLine="오늘 방송함"; tLvl="high"; }
-  else{ const pT=predict(today); tBig=pT.prob+"%"; tLine=`오늘(${wdN[pT.wd]}) ${pT.word}`+(pT.rest?' · 정기휴방':''); tLvl=pT.lvl; }
+  else{ const pT=predict(today); tBig=pT.prob+"%"; tLine=`오늘(${wdN[pT.wd]}) ${pT.word}`+(pT.rest?(pT.makeup?' · 정기휴방(대타 가능)':' · 정기휴방'):''); tLvl=pT.lvl; }
   const cardToday=`<div class="stat ${tLvl}" title="오늘 방송 확률 + 예상 시작 (참고용)"><div class="n">${tBig}</div><div class="l">${tLine}</div><div class="l2">예상 시작 ${predStartFor(todayWd)}</div></div>`;
   // 내일 카드: 확률 + 예상 시작
   const cardTomo=`<div class="stat ${lvl}" title="내일 방송 확률 + 예상 시작 (참고용)"><div class="n">${prob}%</div><div class="l">${predLabel}</div><div class="l2">예상 시작 ${predStartFor(tomoWd)}</div></div>`;
   document.getElementById('stats').innerHTML= genItems.map(statHTML).join('') + cardToday + cardTomo;
 })();
-document.getElementById('nick').textContent=DATA.nick||DATA.bid;
+document.getElementById('nick').innerHTML=`<a href="https://www.sooplive.com/station/${DATA.bid}" target="_blank" rel="noopener" title="방송국 홈으로 이동">${escapeHtml(DATA.nick||DATA.bid)}</a>`;
 document.getElementById('sub').innerHTML=`@${DATA.bid} · 방송 기록 ${firstDate} ~ ${lastDate}`;
 const pf=document.getElementById('pf');
 if(DATA.profile){pf.src=DATA.profile;pf.onerror=()=>pf.style.display='none';}else{pf.style.display='none';}
@@ -522,7 +536,7 @@ function render(){
   document.getElementById('next').disabled=sameMonth(view,maxView);
   const startDow=new Date(y,m,1).getDay();
   const daysInMonth=new Date(y,m+1,0).getDate();
-  const t=new Date();const todayStr=t.getFullYear()+"-"+pad(t.getMonth()+1)+"-"+pad(t.getDate());
+  const bt=bToday();const todayStr=bt.getFullYear()+"-"+pad(bt.getMonth()+1)+"-"+pad(bt.getDate());
   let cells=[];
   for(let i=0;i<startDow;i++)cells.push(`<div class="cell empty"></div>`);
   for(let d=1;d<=daysInMonth;d++){
