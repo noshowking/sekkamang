@@ -181,9 +181,10 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
        background:var(--panel2);border:1px solid var(--line)}
   header.top .who h1{margin:0;font-size:22px}
   header.top .who .sub{color:var(--muted);font-size:13px;margin-top:4px}
-  .stats{display:flex;flex-wrap:wrap;gap:10px;margin-bottom:22px}
+  .stats{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:22px}
+  @media(max-width:520px){.stats{grid-template-columns:repeat(2,1fr)}}
   .stat{background:var(--panel);border:1px solid var(--line);border-radius:12px;
-        padding:12px 16px;min-width:110px;flex:1}
+        padding:12px 16px;display:flex;flex-direction:column;justify-content:center}
   .stat .n{font-size:22px;font-weight:700;color:#fff}
   .stat.high{background:rgba(134,239,172,.22);border-color:rgba(134,239,172,.5)}
   .stat.mid{background:rgba(253,224,138,.22);border-color:rgba(253,224,138,.5)}
@@ -191,6 +192,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .stat.high .l,.stat.mid .l,.stat.low .l{color:#eef1f6}
   .stat[title]{cursor:help}
   .stat .l{font-size:12px;color:var(--muted);margin-top:2px}
+  .stat .l2{font-size:12px;color:#cbd2e0;margin-top:5px;font-weight:600}
   .calbar{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px}
   .calbar .title{font-size:18px;font-weight:700;min-width:150px;text-align:center}
   .navbtn{background:var(--panel2);border:1px solid var(--line);color:var(--text);
@@ -454,18 +456,21 @@ function updateMonthStats(){
 
   const iv=new Date(lastDate+"T00:00:00");
   const ms0=monthStats(iv.getFullYear(), iv.getMonth());
-  const items=[
+  const genItems=[
     [ms0.days,"방송한 날","","이 달에 방송한 날 수 (달을 넘기면 바뀝니다)","statDays"],
     [ms0.hours+"h","누적 방송시간","","이 달 방송 시간 합계 (달을 넘기면 바뀝니다)","statHours"],
     [ms0.maxOn,"연속 뱅송일","","이 달 최장 연속 방송일 (달을 넘기면 바뀝니다)","statOn"],
     [ms0.maxOff,"연속 노쇼일","","이 달 방송을 켜지 않은 최장 연속일 (달을 넘기면 바뀝니다)","statOff"],
-    todayCard,
-    [prob+"%",predLabel,lvl,"요일별·최근 빈도·연속 패턴·방송 길이 + 정기휴방(월·금) 반영 추정치 (참고용)",""],
-    startTodayCard,
-    startTomoCard,
   ];
-  document.getElementById('stats').innerHTML=
-    items.map(([n,l,c,t,id])=>`<div class="stat ${c||''}"${t?` title="${t}"`:''}><div class="n"${id?` id="${id}"`:''}>${n}</div><div class="l">${l}</div></div>`).join('');
+  const statHTML=([n,l,c,t,id])=>`<div class="stat ${c||''}"${t?` title="${t}"`:''}><div class="n"${id?` id="${id}"`:''}>${n}</div><div class="l">${l}</div></div>`;
+  // 오늘 카드: 확률 + 예상 시작
+  let tBig,tLine,tLvl;
+  if(todayHas){ tBig="뱅온 ✓"; tLine="오늘 방송함"; tLvl="high"; }
+  else{ const pT=predict(today); tBig=pT.prob+"%"; tLine=`오늘(${wdN[pT.wd]}) ${pT.word}`+(pT.rest?' · 정기휴방':''); tLvl=pT.lvl; }
+  const cardToday=`<div class="stat ${tLvl}" title="오늘 방송 확률 + 예상 시작 (참고용)"><div class="n">${tBig}</div><div class="l">${tLine}</div><div class="l2">예상 시작 ${predStartFor(todayWd)}</div></div>`;
+  // 내일 카드: 확률 + 예상 시작
+  const cardTomo=`<div class="stat ${lvl}" title="내일 방송 확률 + 예상 시작 (참고용)"><div class="n">${prob}%</div><div class="l">${predLabel}</div><div class="l2">예상 시작 ${predStartFor(tomoWd)}</div></div>`;
+  document.getElementById('stats').innerHTML= genItems.map(statHTML).join('') + cardToday + cardTomo;
 })();
 document.getElementById('nick').textContent=DATA.nick||DATA.bid;
 document.getElementById('sub').innerHTML=`@${DATA.bid} · 방송 기록 ${firstDate} ~ ${lastDate}`;
