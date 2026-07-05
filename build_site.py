@@ -126,7 +126,7 @@ def main():
 
     payload = {
         "bid": bid, "nick": nick, "profile": profile,
-        "generated": datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC"),
+        "generated": (datetime.datetime.utcnow() + datetime.timedelta(hours=9)).strftime("%Y-%m-%d %H:%M KST"),
         "broadcasts": broadcasts,
     }
     os.makedirs(OUT_DIR, exist_ok=True)
@@ -231,7 +231,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .vod .s{font-size:12px;color:var(--muted);line-height:1.6}
   .vod .s b{color:#cbd2e0;font-weight:600}
   footer{margin-top:30px;color:var(--muted);font-size:12px;text-align:center}
-  @media(max-width:560px){.vod img{width:92px;height:52px}}
+  @media(max-width:560px){.vod img{width:92px;height:52px}.stat{min-width:90px}}
   /* 은은한 등장 애니메이션 */
   @keyframes fadeUp{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
   @keyframes popIn{from{opacity:0;transform:scale(.94)}to{opacity:1;transform:scale(1)}}
@@ -370,7 +370,7 @@ function updateMonthStats(){
   const totalMs=DATA.broadcasts.reduce((s,b)=>s+(b.duration_ms||0),0);
   const totalHours=Math.round(totalMs/3600000);
 
-  // ---- 방송 예측 (과거 요일별 + 최근 빈도 기반 추정) ----
+  // ---- 내일 방송 예측 (과거 요일별 + 최근 빈도 기반 추정) ----
   const dayMs=86400000;
   const today=new Date();today.setHours(0,0,0,0);
   const first=new Date(firstDate+"T00:00:00");
@@ -428,7 +428,15 @@ function updateMonthStats(){
   const pTom=predict(tomorrow);
   const prob=pTom.prob, lvl=pTom.lvl, twd=pTom.wd;
   const predLabel = `내일(${wdN[twd]}) ${pTom.word}`+(pTom.rest?' · 정기휴방':'');
+  // 오늘 카드: 이미 방송했으면 확정 표시, 아니면 확률 예측
   const todayHas=bset.has(ymdL(today));
+  let todayCard;
+  if(todayHas){
+    todayCard=["뱅온 ✓","오늘 방송함","high","오늘 이미 방송을 켰어요",""];
+  } else {
+    const pT=predict(today);
+    todayCard=[pT.prob+"%",`오늘(${wdN[pT.wd]}) ${pT.word}`+(pT.rest?' · 정기휴방':''),pT.lvl,"오늘 방송 확률 (참고용)",""];
+  }
 
   // ---- 예상 시작 시각 (요일별 시작시간 중앙값, 새벽은 +24h 보정) ----
   const startMin=(b)=>{const p=b.start.slice(11).split(':');let h=+p[0],m=+p[1],v=h*60+m;if(h<12)v+=1440;return v;};
@@ -438,7 +446,13 @@ function updateMonthStats(){
   const wdStarts=[[],[],[],[],[],[],[]];
   for(const b of DATA.broadcasts){const w=new Date(b.date+"T00:00:00").getDay(); wdStarts[w].push(startMin(b));}
   const predStartFor=(w)=>{const arr=wdStarts[w]; return fmtHM(arr.length>=3?med(arr):overallMed);};
+  const durs=DATA.broadcasts.slice(-30).map(b=>b.duration_ms).sort((x,y)=>x-y);
+  const mdur=durs.length?durs[Math.floor(durs.length/2)]:0;
+  const dh=Math.floor(mdur/3600000),dm=Math.round((mdur%3600000)/60000);
+  const durLabel=(dh?dh+'시간':'')+(dm?' '+dm+'분':'')||'-';
   const todayWd=today.getDay(), tomoWd=tomorrow.getDay();
+  const startTodayCard=[predStartFor(todayWd),`오늘(${wdN[todayWd]}) 예상 시작`,"",wdN[todayWd]+"요일 시작시각 중앙값 · 평균 방송길이 "+durLabel,""];
+  const startTomoCard=[predStartFor(tomoWd),`내일(${wdN[tomoWd]}) 예상 시작`,"",wdN[tomoWd]+"요일 시작시각 중앙값 · 평균 방송길이 "+durLabel,""];
 
   const iv=new Date(lastDate+"T00:00:00");
   const ms0=monthStats(iv.getFullYear(), iv.getMonth());
