@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-새까망 방송 달력 - 자동 사이트 빌더
+SOOP 방송 달력 - 자동 사이트 빌더
 =================================
 GitHub Actions에서 주기적으로 실행되어 SOOP 방송(다시보기) 기록을 크롤링하고,
 public/index.html 을 새로 만들어 GitHub Pages로 배포합니다.
@@ -91,7 +91,7 @@ def build(items, bid):
             continue
         dur = ucc.get("total_file_duration") or 0
         start = end - datetime.timedelta(milliseconds=dur)
-        day_str = end.strftime("%Y-%m-%d")   # VOD 업로드(등록) 일자 기준 (달력 표시용)
+        day_str = start.strftime("%Y-%m-%d")   # 방송을 켠(시작) 시점 기준 (달력 표시용)
         # 확률 계산용 '방송일': 새벽(DAY_START_HOUR 이전)에 '시작'한 방송은 전날 방송으로 간주
         pdate = (start - datetime.timedelta(hours=DAY_START_HOUR)).strftime("%Y-%m-%d")
         if SINCE and day_str < SINCE:
