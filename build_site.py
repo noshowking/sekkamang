@@ -208,6 +208,8 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .cell.on{background:var(--on-soft);border-color:#2f6b45;cursor:pointer}
   .cell.on:hover{border-color:var(--on)}
   .cell.on .d{color:#dff6e6;font-weight:700}
+  .cell.off{background:rgba(252,165,165,.13);border-color:rgba(252,165,165,.3)}
+  .cell.off .d{color:#f3c4c4}
   .cell.today{outline:2px solid var(--today);outline-offset:-2px}
   .cell .hrs{margin-top:auto;font-size:11px;color:#7fd3a0;font-weight:600;line-height:1.2}
   .cell .cnt{position:absolute;top:5px;right:7px;font-size:11px;color:var(--on);font-weight:700}
@@ -267,9 +269,12 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   #enterBtn:hover{filter:brightness(1.08)}
   #intro.gone{display:none}
   /* 배경음악 컨트롤 (우측 상단) */
-  #bgmCtl{position:fixed;top:14px;right:14px;z-index:80;display:flex;align-items:center;gap:9px;
+  #bgmWrap{position:fixed;top:14px;right:14px;z-index:80;display:flex;flex-direction:column;align-items:flex-end;gap:5px}
+  #bgmCtl{display:flex;align-items:center;gap:9px;
     background:rgba(18,20,26,.72);backdrop-filter:blur(6px);border:1px solid #2a2f3a;
     border-radius:999px;padding:7px 12px}
+  #bgmNote{font-size:10px;color:var(--muted);background:rgba(18,20,26,.55);
+    padding:2px 8px;border-radius:8px;letter-spacing:.2px}
   #bgmToggle{width:30px;height:30px;border-radius:50%;border:none;cursor:pointer;font-size:14px;
     background:linear-gradient(#f4e4a8,#d4af37);color:#111;display:flex;align-items:center;justify-content:center}
   #bgmToggle.off{background:#333844;color:#9aa3b2}
@@ -280,9 +285,12 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 <body>
 <!-- 배경음악 + 컨트롤(우측 상단) -->
 <audio id="bgm" loop preload="auto" src="__BGM__"></audio>
-<div id="bgmCtl">
-  <button id="bgmToggle" class="off" title="음악 켜기/끄기">♪</button>
-  <input id="bgmVol" type="range" min="0" max="100" value="22" title="볼륨">
+<div id="bgmWrap">
+  <div id="bgmCtl">
+    <button id="bgmToggle" class="off" title="음악 켜기/끄기">♪</button>
+    <input id="bgmVol" type="range" min="0" max="100" value="22" title="볼륨">
+  </div>
+  <div id="bgmNote">AI로 생성(합성)된 음원입니다</div>
 </div>
 
 <!-- 인트로 영상 -->
@@ -313,6 +321,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   <div class="grid" id="cal" style="margin-top:6px"></div>
   <div class="legend">
     <span class="k"><span class="box" style="background:#14351f;border:1px solid #2f6b45"></span> 방송한 날</span>
+    <span class="k"><span class="box" style="background:rgba(252,165,165,.18);border:1px solid rgba(252,165,165,.4)"></span> 노쇼(미방송)</span>
     <span class="k"><span class="box" style="background:transparent;outline:2px solid #f59e0b"></span> 오늘</span>
     <span class="k">초록 날짜를 클릭 → 그날 방송 보기</span>
   </div>
@@ -464,6 +473,37 @@ let view=new Date(lastDate+"T00:00:00");view.setDate(1);
 const minView=new Date(firstDate+"T00:00:00");minView.setDate(1);
 const maxView=new Date();maxView.setDate(1);maxView.setHours(0,0,0,0);
 function sameMonth(a,b){return a.getFullYear()===b.getFullYear()&&a.getMonth()===b.getMonth();}
+// 마우스 오버 시 은은한 틱 소리 (파일 없이 Web Audio로 생성)
+let uiAC=null;
+function uiTick(){
+  try{
+    uiAC=uiAC||new (window.AudioContext||window.webkitAudioContext)();
+    if(uiAC.state==='suspended') uiAC.resume();
+    const t=uiAC.currentTime;
+    const o=uiAC.createOscillator(), g=uiAC.createGain();
+    o.type='sine'; o.frequency.setValueAtTime(1046,t); o.frequency.exponentialRampToValueAtTime(1568,t+0.05);
+    g.gain.setValueAtTime(0.0001,t);
+    g.gain.exponentialRampToValueAtTime(0.05,t+0.008);
+    g.gain.exponentialRampToValueAtTime(0.0001,t+0.09);
+    o.connect(g); g.connect(uiAC.destination); o.start(t); o.stop(t+0.1);
+  }catch(e){}
+}
+// 노쇼 칸 호버 시 '삐빅' 소리
+function uiBeep(){
+  try{
+    uiAC=uiAC||new (window.AudioContext||window.webkitAudioContext)();
+    if(uiAC.state==='suspended') uiAC.resume();
+    const t=uiAC.currentTime;
+    [[0,1320],[0.09,1760]].forEach(([off,f])=>{
+      const o=uiAC.createOscillator(), g=uiAC.createGain(); const s=t+off;
+      o.type='square'; o.frequency.value=f;
+      g.gain.setValueAtTime(0.0001,s);
+      g.gain.exponentialRampToValueAtTime(0.045,s+0.005);
+      g.gain.exponentialRampToValueAtTime(0.0001,s+0.06);
+      o.connect(g); g.connect(uiAC.destination); o.start(s); o.stop(s+0.07);
+    });
+  }catch(e){}
+}
 function render(){
   const y=view.getFullYear(),m=view.getMonth();
   document.getElementById('calTitle').textContent=`${y}년 ${m+1}월`;
@@ -482,10 +522,17 @@ function render(){
       const hlabel=totMs>=3600000?(totMs/3600000).toFixed(1).replace(/\.0$/,'')+'시간':Math.round(totMs/60000)+'분';
       const cnt=list.length>1?`<span class="cnt">${list.length}</span>`:'';
       cells.push(`<div class="cell on ${isT?'today':''}" style="${dly}" data-d="${ds}"><div class="d">${d}</div>${cnt}<div class="hrs">${hlabel}</div></div>`);
-    }else cells.push(`<div class="cell ${isT?'today':''}" style="${dly}"><div class="d">${d}</div></div>`);
+    }else{
+      const off = ds>=firstDate && ds<todayStr;   // 활동 시작 후 ~ 어제까지의 미방송일
+      cells.push(`<div class="cell ${off?'off ':''}${isT?'today':''}" style="${dly}"><div class="d">${d}</div></div>`);
+    }
   }
   document.getElementById('cal').innerHTML=cells.join('');
-  document.querySelectorAll('.cell.on').forEach(c=>c.addEventListener('click',()=>showDetail(c.dataset.d)));
+  document.querySelectorAll('.cell.on').forEach(c=>{
+    c.addEventListener('click',()=>showDetail(c.dataset.d));
+    c.addEventListener('mouseenter',uiTick);
+  });
+  document.querySelectorAll('.cell.off').forEach(c=>c.addEventListener('mouseenter',uiBeep));
   updateMonthStats();
 }
 function escapeHtml(s){return (s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
