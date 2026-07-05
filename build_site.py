@@ -184,8 +184,11 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .stats{display:flex;flex-wrap:wrap;gap:10px;margin-bottom:22px}
   .stat{background:var(--panel);border:1px solid var(--line);border-radius:12px;
         padding:12px 16px;min-width:110px;flex:1}
-  .stat .n{font-size:22px;font-weight:700}
-  .stat .n.high{color:#22c55e}.stat .n.mid{color:#f59e0b}.stat .n.low{color:#f87171}
+  .stat .n{font-size:22px;font-weight:700;color:#fff}
+  .stat.high{background:rgba(134,239,172,.22);border-color:rgba(134,239,172,.5)}
+  .stat.mid{background:rgba(253,224,138,.22);border-color:rgba(253,224,138,.5)}
+  .stat.low{background:rgba(252,165,165,.22);border-color:rgba(252,165,165,.5)}
+  .stat.high .l,.stat.mid .l,.stat.low .l{color:#eef1f6}
   .stat[title]{cursor:help}
   .stat .l{font-size:12px;color:var(--muted);margin-top:2px}
   .calbar{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px}
@@ -279,7 +282,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 <audio id="bgm" loop preload="auto" src="__BGM__"></audio>
 <div id="bgmCtl">
   <button id="bgmToggle" class="off" title="음악 켜기/끄기">♪</button>
-  <input id="bgmVol" type="range" min="0" max="100" value="44" title="볼륨">
+  <input id="bgmVol" type="range" min="0" max="100" value="22" title="볼륨">
 </div>
 
 <!-- 인트로 영상 -->
@@ -366,27 +369,14 @@ function updateMonthStats(){
     const dt=new Date(t), wd=dt.getDay();
     wdTot[wd]++; if(bset.has(ymdL(dt))) wdOn[wd]++;
   }
-  const tomorrow=new Date(today.getTime()+dayMs), twd=tomorrow.getDay();
-  const wdRate = wdTot[twd] ? wdOn[twd]/wdTot[twd] : 0;
-  let rTot=0,rOn=0;
-  for(let t=today.getTime()-dayMs; t>=first.getTime() && rTot<30; t-=dayMs){
-    rTot++; if(bset.has(ymdL(new Date(t)))) rOn++;
-  }
-  const recentRate = rTot ? rOn/rTot : 0;
-  let wTot=0,wOn=0;
-  for(let t=today.getTime(); t>=first.getTime() && wTot<8; t-=dayMs){
-    const dt=new Date(t); if(dt.getDay()===twd){wTot++; if(bset.has(ymdL(dt))) wOn++;}
-  }
-  const wdRecent = wTot ? wOn/wTot : wdRate;
-  // 연속 패턴: 방송한 다음날 / 안 한 다음날에 방송할 확률
+  // 연속 패턴 통계 (방송한 다음날 / 안 한 다음날 방송률)
   let a1=0,b1=0,a0=0,b0=0;
   for(let t=first.getTime(); t<today.getTime(); t+=dayMs){
-    const cur=bset.has(ymdL(new Date(t))), nxt=bset.has(ymdL(new Date(t+dayMs)));
-    if(cur){b1++; if(nxt)a1++;} else {b0++; if(nxt)a0++;}
+    const c=bset.has(ymdL(new Date(t))), n=bset.has(ymdL(new Date(t+dayMs)));
+    if(c){b1++; if(n)a1++;} else {b0++; if(n)a0++;}
   }
-  const todayOn=bset.has(ymdL(today));
-  const transProb = todayOn ? (b1?a1/b1:recentRate) : (b0?a0/b0:recentRate);
-  // 방송 길이 조건부: 오늘 길게/짧게 방송했으면 내일 방송 확률이 어떻게 달랐나
+  const pAfterOn=b1?a1/b1:0.5, pAfterOff=b0?a0/b0:0.5;
+  // 방송 길이 조건부 통계
   const dayDur={};
   for(const bb of DATA.broadcasts){dayDur[bb.date]=(dayDur[bb.date]||0)+(bb.duration_ms||0);}
   const ddv=Object.values(dayDur).sort((x,y)=>x-y);
@@ -394,22 +384,48 @@ function updateMonthStats(){
   let ln=0,ld=0,sn=0,sd=0;
   for(let t=first.getTime(); t<today.getTime(); t+=dayMs){
     const ds=ymdL(new Date(t)); if(!bset.has(ds)) continue;
-    const nxt=bset.has(ymdL(new Date(t+dayMs)));
-    if((dayDur[ds]||0)>=medDayDur){ld++; if(nxt)ln++;} else {sd++; if(nxt)sn++;}
+    const n=bset.has(ymdL(new Date(t+dayMs)));
+    if((dayDur[ds]||0)>=medDayDur){ld++; if(n)ln++;} else {sd++; if(n)sn++;}
   }
-  const pLong=ld?ln/ld:transProb, pShort=sd?sn/sd:transProb;
-  let durTrans=transProb;
-  if(todayOn) durTrans=((dayDur[ymdL(today)]||0)>=medDayDur)?pLong:pShort;
-  let prob=Math.round(100*(0.30*wdRecent + 0.20*wdRate + 0.16*recentRate + 0.34*durTrans));
-  prob=Math.max(2,Math.min(98,prob));
-  // 정기 휴방 요일이면 확률을 낮춤(깜짝 방송 여지는 남김)
+  const pLong=ld?ln/ld:pAfterOn, pShort=sd?sn/sd:pAfterOn;
   const REST_DAYS=__RESTDAYS__;
-  const isRest=REST_DAYS.indexOf(twd)>=0;
-  if(isRest) prob=Math.max(2, Math.round(prob*__RESTPENALTY__));
   const wdN=['일','월','화','수','목','금','토'];
-  const lvl = prob>=65?'high':prob>=45?'mid':'low';
-  const predWord = lvl==='high'?'뱅온 가능성 높음':lvl==='mid'?'지각할 가능성 높음':'노쇼할 가능성 높음';
-  const predLabel = `내일(${wdN[twd]}) ${predWord}`+(isRest?' · 정기휴방':'');
+
+  // 특정 날짜(target)의 방송 확률 예측
+  function predict(target){
+    const twd=target.getDay();
+    const prev=new Date(target.getTime()-dayMs);
+    const wdRate = wdTot[twd] ? wdOn[twd]/wdTot[twd] : 0;
+    let rT=0,rO=0;
+    for(let t=target.getTime()-dayMs; t>=first.getTime() && rT<30; t-=dayMs){ rT++; if(bset.has(ymdL(new Date(t)))) rO++; }
+    const recentRate = rT?rO/rT:0;
+    let wT=0,wO=0;
+    for(let t=target.getTime()-dayMs; t>=first.getTime() && wT<8; t-=dayMs){ const dt=new Date(t); if(dt.getDay()===twd){wT++; if(bset.has(ymdL(dt))) wO++;} }
+    const wdRecent = wT?wO/wT:wdRate;
+    const prevOn=bset.has(ymdL(prev));
+    const durTr = prevOn ? (((dayDur[ymdL(prev)]||0)>=medDayDur)?pLong:pShort) : pAfterOff;
+    let p=Math.round(100*(0.30*wdRecent + 0.20*wdRate + 0.16*recentRate + 0.34*durTr));
+    p=Math.max(2,Math.min(98,p));
+    const rest=REST_DAYS.indexOf(twd)>=0;
+    if(rest) p=Math.max(2, Math.round(p*__RESTPENALTY__));
+    const lv=p>=65?'high':p>=45?'mid':'low';
+    const word=lv==='high'?'뱅온 가능성 높음':lv==='mid'?'지각할 가능성 높음':'노쇼할 가능성 높음';
+    return {prob:p, lvl:lv, word, rest, wd:twd};
+  }
+
+  const tomorrow=new Date(today.getTime()+dayMs);
+  const pTom=predict(tomorrow);
+  const prob=pTom.prob, lvl=pTom.lvl, twd=pTom.wd;
+  const predLabel = `내일(${wdN[twd]}) ${pTom.word}`+(pTom.rest?' · 정기휴방':'');
+  // 오늘 카드: 이미 방송했으면 확정 표시, 아니면 확률 예측
+  const todayHas=bset.has(ymdL(today));
+  let todayCard;
+  if(todayHas){
+    todayCard=["뱅온 ✓","오늘 방송함","high","오늘 이미 방송을 켰어요",""];
+  } else {
+    const pT=predict(today);
+    todayCard=[pT.prob+"%",`오늘(${wdN[pT.wd]}) ${pT.word}`+(pT.rest?' · 정기휴방':''),pT.lvl,"오늘 방송 확률 (참고용)",""];
+  }
 
   // ---- 예상 시작 시각 (최근 방송 시작시간 중앙값, 새벽은 +24h 보정) ----
   const startMin=(b)=>{const p=b.start.slice(11).split(':');let h=+p[0],m=+p[1],v=h*60+m;if(h<12)v+=1440;return v;};
@@ -429,11 +445,12 @@ function updateMonthStats(){
     [ms0.hours+"h","누적 방송시간","","이 달 방송 시간 합계 (달을 넘기면 바뀝니다)","statHours"],
     [ms0.maxOn,"연속 뱅송일","","이 달 최장 연속 방송일 (달을 넘기면 바뀝니다)","statOn"],
     [ms0.maxOff,"연속 노쇼일","","이 달 방송을 켜지 않은 최장 연속일 (달을 넘기면 바뀝니다)","statOff"],
+    todayCard,
     [prob+"%",predLabel,lvl,"요일별·최근 빈도·연속 패턴·방송 길이 + 정기휴방(월·금) 반영 추정치 (참고용)",""],
     [predStart,"예상 시작 시각","","보통 이 시각쯤 켜요 · 평균 방송길이 "+durLabel,""],
   ];
   document.getElementById('stats').innerHTML=
-    items.map(([n,l,c,t,id])=>`<div class="stat"${t?` title="${t}"`:''}><div class="n ${c||''}"${id?` id="${id}"`:''}>${n}</div><div class="l">${l}</div></div>`).join('');
+    items.map(([n,l,c,t,id])=>`<div class="stat ${c||''}"${t?` title="${t}"`:''}><div class="n"${id?` id="${id}"`:''}>${n}</div><div class="l">${l}</div></div>`).join('');
 })();
 document.getElementById('nick').textContent=DATA.nick||DATA.bid;
 document.getElementById('sub').innerHTML=`@${DATA.bid} · 방송 기록 ${firstDate} ~ ${lastDate}`;
