@@ -26,7 +26,6 @@ BGM_FILE = "bgm.mp3"              # 배경음악 (assets/ 폴더에 넣기)
 SLASH_TIME = 4.0                  # 영상에서 화면이 찢기는 시점(초)
 REST_DAYS = [1, 5]                # 정기 휴방 요일 (일0 월1 화2 수3 목4 금5 토6). 월·금 휴방 → [1,5]
 REST_PENALTY = 0.5               # 정기 휴방 요일이면 예측 확률에 곱하는 값(0~1). 낮출수록 노쇼쪽
-DAY_START_HOUR = 6               # 이 시각(새벽) 이전에 켠 방송은 '전날' 방송으로 집계 (하루 경계)
 MAKEUP_BOOST = 1.8               # 휴방일인데 전날(정규 방송일)에 방송을 안 했으면 '대타 방송' 확률 배수
 # =========================================================
 
@@ -91,8 +90,7 @@ def build(items, bid):
             continue
         dur = ucc.get("total_file_duration") or 0
         start = end - datetime.timedelta(milliseconds=dur)
-        # 새벽(DAY_START_HOUR 이전)에 켠 방송은 전날 방송으로 집계
-        day_str = (start - datetime.timedelta(hours=DAY_START_HOUR)).strftime("%Y-%m-%d")
+        day_str = end.strftime("%Y-%m-%d")   # VOD 업로드(등록) 일자 기준
         if SINCE and day_str < SINCE:
             continue          # 지정한 날짜 이전 방송은 제외
         tno = it.get("title_no")
@@ -140,7 +138,6 @@ def main():
     html = html.replace("__SLASH__", str(SLASH_TIME))
     html = html.replace("__RESTDAYS__", json.dumps(REST_DAYS))
     html = html.replace("__RESTPENALTY__", str(REST_PENALTY))
-    html = html.replace("__DAYSTART__", str(DAY_START_HOUR))
     html = html.replace("__MAKEUP__", str(MAKEUP_BOOST))
     html = html.replace("/*__DATA__*/null",
                         json.dumps(payload, ensure_ascii=False))
@@ -189,9 +186,10 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   header.top .who h1 a{color:inherit;text-decoration:none}
   header.top .who h1 a:hover{text-decoration:underline;color:#fff}
   header.top .who .sub{color:var(--muted);font-size:13px;margin-top:4px}
-  .logo{display:block;height:72px;width:auto;max-width:100%;margin:0 0 16px;
-        filter:drop-shadow(0 2px 10px rgba(0,0,0,.45))}
-  @media(max-width:560px){.logo{height:54px}}
+  .logo{position:fixed;top:14px;left:14px;height:144px;width:auto;z-index:70;
+        filter:drop-shadow(0 3px 12px rgba(0,0,0,.5))}
+  @media(max-width:1180px){.logo{position:static;height:96px;margin:0 0 14px}}
+  @media(max-width:560px){.logo{height:64px}}
   .stats{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:22px}
   @media(max-width:520px){.stats{grid-template-columns:repeat(2,1fr)}}
   .stat{background:var(--panel);border:1px solid var(--line);border-radius:12px;
@@ -362,8 +360,7 @@ const byDate={};
 for(const b of DATA.broadcasts){(byDate[b.date]=byDate[b.date]||[]).push(b);}
 const allDates=Object.keys(byDate).sort();
 const firstDate=allDates[0], lastDate=allDates[allDates.length-1];
-const DAY_START=__DAYSTART__;   // 하루 경계(새벽 이 시각 전이면 아직 '어제')
-function bToday(){const d=new Date(Date.now()-DAY_START*3600000);d.setHours(0,0,0,0);return d;}
+function bToday(){const d=new Date();d.setHours(0,0,0,0);return d;}
 function pad(n){return (n<10?"0":"")+n;}
 function fmtDur(ms){const min=Math.round(ms/60000);const h=Math.floor(min/60),m=min%60;
   return h>0?(h+"시간 "+(m?m+"분":"")).trim():m+"분";}
