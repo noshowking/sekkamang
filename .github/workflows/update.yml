@@ -7,7 +7,7 @@ on:
   workflow_dispatch:           # GitHub에서 수동 실행 버튼
 
 permissions:
-  contents: write              # keepalive 커밋(60일 자동중지 방지)용
+  contents: write              # keepalive 빈 커밋(60일 자동중지 방지)용
   pages: write
   id-token: write
 
@@ -45,8 +45,21 @@ jobs:
         id: deployment
         uses: actions/deploy-pages@v4
 
-      # 저장소가 60일간 '활동 없음'이면 GitHub가 예약 실행을 꺼버림.
-      # 이 워크플로는 커밋을 안 만들어서 idle 상태가 되므로, 주기적으로
-      # 빈 커밋을 남겨 자동중지를 방지한다(약 45일에 한 번만 커밋).
-      - name: 60일 자동중지 방지 (keepalive)
-        uses: gautamkrishnar/keepalive-workflow@v2
+      # 60일간 활동이 없으면 GitHub가 예약 실행을 자동 중지함.
+      # 서드파티 액션 없이, 마지막 커밋이 40일 이상 지났을 때만 빈 커밋을 남겨 방지.
+      - name: 60일 자동중지 방지 (keepalive, 순수 git)
+        if: always()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          LAST=$(git log -1 --format=%ct 2>/dev/null || echo 0)
+          NOW=$(date +%s)
+          DAYS=$(( (NOW - LAST) / 86400 ))
+          echo "마지막 커밋 이후 ${DAYS}일"
+          if [ "$DAYS" -ge 40 ]; then
+            git commit --allow-empty -m "chore: keepalive (예약 실행 유지)"
+            git push
+            echo "keepalive 커밋 push 완료"
+          else
+            echo "아직 40일 미만 → keepalive 생략"
+          fi
