@@ -2,11 +2,12 @@ name: Update SOOP Calendar
 
 on:
   schedule:
-    - cron: '*/30 * * * *'     # 30분마다 자동 실행
-  workflow_dispatch:           # 수동 실행 가능
+    # 매시 :13, :43 실행 (정각/30분 혼잡 시간대를 피해 누락 최소화)
+    - cron: '13,43 * * * *'
+  workflow_dispatch:           # GitHub에서 수동 실행 버튼
 
 permissions:
-  contents: read
+  contents: write              # keepalive 커밋(60일 자동중지 방지)용
   pages: write
   id-token: write
 
@@ -43,3 +44,9 @@ jobs:
       - name: 배포
         id: deployment
         uses: actions/deploy-pages@v4
+
+      # 저장소가 60일간 '활동 없음'이면 GitHub가 예약 실행을 꺼버림.
+      # 이 워크플로는 커밋을 안 만들어서 idle 상태가 되므로, 주기적으로
+      # 빈 커밋을 남겨 자동중지를 방지한다(약 45일에 한 번만 커밋).
+      - name: 60일 자동중지 방지 (keepalive)
+        uses: gautamkrishnar/keepalive-workflow@v2
