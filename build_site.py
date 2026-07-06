@@ -26,8 +26,15 @@ BGM_FILE = "bgm.mp3"              # 배경음악 (assets/ 폴더에 넣기)
 SLASH_TIME = 4.0                  # 영상에서 화면이 찢기는 시점(초)
 REST_DAYS = [1, 5]                # 정기 휴방 요일 (일0 월1 화2 수3 목4 금5 토6). 월·금 휴방 → [1,5]
 REST_PENALTY = 0.5               # 정기 휴방 요일이면 예측 확률에 곱하는 값(0~1). 낮출수록 노쇼쪽
-MAKEUP_BOOST = 3.5               # 휴방일인데 전날(정규 방송일)에 방송을 안 했으면 '대타 방송' 확률 배수
+MAKEUP_BOOST = 1.8               # 휴방일인데 전날(정규 방송일)에 방송을 안 했으면 '대타 방송' 확률 배수
 DAY_START_HOUR = 7               # 이 시각 이전(새벽)에 '시작'한 방송은 전날 방송으로 간주(확률 계산용). 달력 표시는 업로드일 그대로.
+# 목차(상단 메뉴)에 넣을 외부 링크. 이름:주소 형태. 원하면 주석 풀고 추가하세요.
+LINKS = {
+    "방송국(SOOP)": "https://www.sooplive.com/station/allblack1019",
+    # "유튜브": "https://www.youtube.com/@여기",
+    # "치지직": "https://chzzk.naver.com/여기",
+    # "X(트위터)": "https://x.com/여기",
+}
 # =========================================================
 
 PER_PAGE = 60
@@ -136,17 +143,28 @@ def main():
         "broadcasts": broadcasts,
     }
     os.makedirs(OUT_DIR, exist_ok=True)
-    html = HTML_TEMPLATE
-    html = html.replace("__VIDEO__", "assets/" + VIDEO_FILE)
-    html = html.replace("__BGM__", "assets/" + BGM_FILE)
-    html = html.replace("__SLASH__", str(SLASH_TIME))
-    html = html.replace("__RESTDAYS__", json.dumps(REST_DAYS))
-    html = html.replace("__RESTPENALTY__", str(REST_PENALTY))
-    html = html.replace("__MAKEUP__", str(MAKEUP_BOOST))
-    html = html.replace("/*__DATA__*/null",
-                        json.dumps(payload, ensure_ascii=False))
+
+    def fill(tpl):
+        h = tpl
+        h = h.replace("__VIDEO__", "assets/" + VIDEO_FILE)
+        h = h.replace("__BGM__", "assets/" + BGM_FILE)
+        h = h.replace("__SLASH__", str(SLASH_TIME))
+        h = h.replace("__RESTDAYS__", json.dumps(REST_DAYS))
+        h = h.replace("__RESTPENALTY__", str(REST_PENALTY))
+        h = h.replace("__MAKEUP__", str(MAKEUP_BOOST))
+        h = h.replace("__LINKS__", json.dumps(LINKS, ensure_ascii=False))
+        h = h.replace("__NICK__", nick or bid)
+        h = h.replace("/*__DATA__*/null", json.dumps(payload, ensure_ascii=False))
+        return h
+
     with open(os.path.join(OUT_DIR, "index.html"), "w", encoding="utf-8") as f:
-        f.write(html)
+        f.write(fill(HTML_TEMPLATE))
+    # 게임 페이지(game.html)는 별도 정적 파일 → public 으로 복사 (목차로 연동)
+    if os.path.isfile("game.html"):
+        shutil.copy("game.html", os.path.join(OUT_DIR, "game.html"))
+        print("game.html 복사 완료")
+    else:
+        print("주의: game.html 이 없어 게임 페이지가 포함되지 않습니다.")
 
     # assets 폴더(영상/음악)를 public/assets 로 복사
     if os.path.isdir("assets"):
@@ -195,6 +213,17 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   /* z-index 30 < 인트로(40): 인트로가 화면을 덮는 동안 좌상단 로고는 가려지고, 달력에 들어오면 나타남 */
   @media(max-width:1180px){.logo{position:static;height:96px;margin:0 0 14px}}
   @media(max-width:560px){.logo{height:64px}}
+  /* ===== 목차(내비게이션) ===== */
+  .nav{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:20px}
+  .navtab{display:inline-block;background:var(--panel2);border:1px solid var(--line);color:var(--text);
+    border-radius:10px;padding:9px 18px;cursor:pointer;font-size:15px;font-weight:700;
+    font-family:inherit;text-decoration:none}
+  .navtab:hover{border-color:var(--accent)}
+  .navtab.active{background:linear-gradient(#f4e4a8,#d4af37);color:#111;border-color:#d4af37}
+  .navlink{display:inline-flex;align-items:center;gap:5px;background:var(--panel2);
+    border:1px solid var(--line);color:var(--text);border-radius:10px;padding:9px 16px;
+    font-size:14px;font-weight:600;text-decoration:none}
+  .navlink:hover{border-color:var(--accent);color:#fff}
   .stats{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:22px}
   @media(max-width:520px){.stats{grid-template-columns:repeat(2,1fr)}}
   .stat{background:var(--panel);border:1px solid var(--line);border-radius:12px;
@@ -340,6 +369,10 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       <div class="sub" id="sub"></div>
     </div>
   </header>
+  <nav class="nav" id="nav">
+    <a class="navtab active" href="index.html">📅 방송 달력</a>
+    <a class="navtab" href="game.html">🎰 뱅온 룰렛</a>
+  </nav>
   <div class="stats" id="stats"></div>
   <div class="calbar">
     <button class="navbtn" id="prev">◀</button>
@@ -597,6 +630,17 @@ function showDetail(ds){
 document.getElementById('prev').onclick=()=>{view.setMonth(view.getMonth()-1);render();};
 document.getElementById('next').onclick=()=>{view.setMonth(view.getMonth()+1);render();};
 render();
+
+/* ===== 목차: 외부 링크 버튼 주입 ===== */
+(function(){
+  try{
+    const LINKS=__LINKS__; const nav=document.getElementById('nav');
+    for(const label in LINKS){ const url=LINKS[label]; if(!url) continue;
+      const a=document.createElement('a'); a.className='navlink'; a.href=url;
+      a.target='_blank'; a.rel='noopener'; a.textContent='🔗 '+label; nav.appendChild(a);
+    }
+  }catch(e){}
+})();
 </script>
 <script>
 /* ===== 인트로 영상 + 찢김 + 배경음악 ===== */
@@ -613,6 +657,9 @@ render();
   const bgmToggle=document.getElementById('bgmToggle');
   const bgmVol=document.getElementById('bgmVol');
   let started=false, torn=false;
+
+  // 이번 방문에서 이미 인트로를 봤으면(게임↔달력 이동 등) 건너뛰고 바로 달력 표시
+  try{ if(sessionStorage.getItem('introDone')){ intro.classList.add('gone'); started=true; torn=true; } }catch(e){}
 
   // 배경음악 컨트롤
   bgm.volume=bgmVol.value/100;
@@ -658,6 +705,7 @@ render();
   });
   enterBtn.addEventListener('click',(e)=>{
     e.stopPropagation();
+    try{ sessionStorage.setItem('introDone','1'); }catch(e){}
     intro.classList.add('open');
     setTimeout(()=>intro.classList.add('gone'),950);
   });
@@ -669,4 +717,4 @@ render();
 
 if __name__ == "__main__":
     main()
-# rev: 새벽 방송 확률예외(pdate) + 인트로 로고 z-index 조정
+# rev: 새벽 방송 확률예외(pdate) + 별도 정적 game.html(슈팅 로그라이크) 목차 연동
