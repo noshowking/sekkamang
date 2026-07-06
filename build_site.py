@@ -159,12 +159,6 @@ def main():
 
     with open(os.path.join(OUT_DIR, "index.html"), "w", encoding="utf-8") as f:
         f.write(fill(HTML_TEMPLATE))
-    # 게임 페이지(game.html)는 별도 정적 파일 → public 으로 복사 (목차로 연동)
-    if os.path.isfile("game.html"):
-        shutil.copy("game.html", os.path.join(OUT_DIR, "game.html"))
-        print("game.html 복사 완료")
-    else:
-        print("주의: game.html 이 없어 게임 페이지가 포함되지 않습니다.")
 
     # assets 폴더(영상/음악)를 public/assets 로 복사
     if os.path.isdir("assets"):
@@ -371,7 +365,6 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   </header>
   <nav class="nav" id="nav">
     <a class="navtab active" href="index.html">📅 방송 달력</a>
-    <a class="navtab" href="game.html">🎰 뱅온 룰렛</a>
   </nav>
   <div class="stats" id="stats"></div>
   <div class="calbar">
@@ -630,17 +623,6 @@ function showDetail(ds){
 document.getElementById('prev').onclick=()=>{view.setMonth(view.getMonth()-1);render();};
 document.getElementById('next').onclick=()=>{view.setMonth(view.getMonth()+1);render();};
 render();
-
-/* ===== 목차: 외부 링크 버튼 주입 ===== */
-(function(){
-  try{
-    const LINKS=__LINKS__; const nav=document.getElementById('nav');
-    for(const label in LINKS){ const url=LINKS[label]; if(!url) continue;
-      const a=document.createElement('a'); a.className='navlink'; a.href=url;
-      a.target='_blank'; a.rel='noopener'; a.textContent='🔗 '+label; nav.appendChild(a);
-    }
-  }catch(e){}
-})();
 </script>
 <script>
 /* ===== 인트로 영상 + 찢김 + 배경음악 ===== */
@@ -717,4 +699,4 @@ render();
 
 if __name__ == "__main__":
     main()
-# rev: 새벽 방송 확률예외(pdate) + 별도 정적 game.html(슈팅 로그라이크) 목차 연동
+# rev: 새벽 방송 확률예외(pdate) · 목차 방송 달력만(게임 제거)
