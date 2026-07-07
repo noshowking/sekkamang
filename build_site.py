@@ -375,11 +375,11 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .cell.off .d{color:#f3c4c4}
   .cell.today{outline:2px solid var(--today);outline-offset:-2px}
   .cell .hrs{margin-top:auto;font-size:11px;color:#7fd3a0;font-weight:600;line-height:1.2}
-  .cell .pred{font-size:8.5px;font-weight:800;line-height:1.2;margin-top:2px;padding:1px 4px;border-radius:5px;align-self:flex-start;text-align:center}
+  .cell .pred{position:absolute;top:3px;right:3px;z-index:2;font-size:8.5px;font-weight:800;line-height:1.15;padding:1px 4px;border-radius:5px;text-align:right;max-width:78%}
   .cell .pred.ok{color:#eafff2;background:#0b7a39;border:1px solid #17b352}
   .cell .pred.no{color:#ffecec;background:#9c1414;border:1px solid #e23c3c}
-  @media(max-width:560px){.cell .pred{font-size:7.5px;padding:0 3px}}
-  .cell .cnt{position:absolute;top:5px;right:7px;font-size:11px;color:var(--on);font-weight:700}
+  @media(max-width:560px){.cell .pred{font-size:7px;padding:0 2px;top:2px;right:2px}}
+  .cell .cnt{position:absolute;bottom:5px;right:6px;font-size:11px;color:var(--on);font-weight:700}
   .legend{margin:14px 2px;color:var(--muted);font-size:12px;display:flex;gap:16px;align-items:center;flex-wrap:wrap}
   .legend .k{display:inline-flex;align-items:center;gap:6px}
   .legend .box{width:14px;height:14px;border-radius:4px;display:inline-block}
