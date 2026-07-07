@@ -25,9 +25,14 @@ VIDEO_FILE = "intro.mp4"          # 인트로 영상 (assets/ 폴더에 넣기)
 BGM_FILE = "bgm.mp3"              # 배경음악 (assets/ 폴더에 넣기)
 SLASH_TIME = 4.0                  # 영상에서 화면이 찢기는 시점(초)
 REST_DAYS = [1, 5]                # 정기 휴방 요일 (일0 월1 화2 수3 목4 금5 토6). 월·금 휴방 → [1,5]
-REST_PENALTY = 0.5               # 정기 휴방 요일이면 예측 확률에 곱하는 값(0~1). 낮출수록 노쇼쪽
-MAKEUP_BOOST = 1.8               # 휴방일인데 전날(정규 방송일)에 방송을 안 했으면 '대타 방송' 확률 배수
+REST_PENALTY = 0.6               # (백테스트 튜닝) 정기 휴방 요일이면 예측 확률에 곱하는 값(0~1)
+MAKEUP_BOOST = 1.5               # (백테스트 튜닝) 휴방일인데 전날 정규일에 방송을 안 했으면 '대타 방송' 확률 배수
+# 확률 예측 가중치 [wdRecent(최근 같은요일), wdRate(전체 요일), recentRate(최근30일 빈도), durTr(직전날 전이)] — 백테스트로 튜닝
+PRED_WEIGHTS = [0.24, 0.10, 0.50, 0.16]
+PRED_ALPHA = 3                   # 베이지안 스무딩 강도: 표본 적은 통계일수록 전체평균 쪽으로 당김(0=끔)
 DAY_START_HOUR = 7               # 이 시각 이전(새벽)에 '시작'한 방송은 전날 방송으로 간주(확률 계산용). 달력 표시는 업로드일 그대로.
+EVENING_START = 19               # 저녁 감쇠 시작 시각(24h). 오늘 미방송이면 이 시각부터 자정까지 확률이 시간마다 감소
+EVENING_DECAY = 0.95             # 1시간 경과마다 곱하는 감쇠 배수(0~1). 낮출수록 더 빨리 떨어짐
 # 목차(상단 메뉴)에 넣을 외부 링크. 이름:주소 형태. 원하면 주석 풀고 추가하세요.
 LINKS = {
     "방송국(SOOP)": "https://www.sooplive.com/station/allblack1019",
@@ -152,6 +157,13 @@ def main():
         h = h.replace("__RESTDAYS__", json.dumps(REST_DAYS))
         h = h.replace("__RESTPENALTY__", str(REST_PENALTY))
         h = h.replace("__MAKEUP__", str(MAKEUP_BOOST))
+        h = h.replace("__EVESTART__", str(EVENING_START))
+        h = h.replace("__EVEDECAY__", str(EVENING_DECAY))
+        h = h.replace("__ALPHA__", str(PRED_ALPHA))
+        h = h.replace("__W1__", str(PRED_WEIGHTS[0]))
+        h = h.replace("__W2__", str(PRED_WEIGHTS[1]))
+        h = h.replace("__W3__", str(PRED_WEIGHTS[2]))
+        h = h.replace("__W4__", str(PRED_WEIGHTS[3]))
         h = h.replace("__LINKS__", json.dumps(LINKS, ensure_ascii=False))
         h = h.replace("__NICK__", nick or bid)
         h = h.replace("/*__DATA__*/null", json.dumps(payload, ensure_ascii=False))
@@ -455,22 +467,28 @@ function updateMonthStats(){
   }
   const pLong=ld?ln/ld:pAfterOn, pShort=sd?sn/sd:pAfterOn;
   const REST_DAYS=__RESTDAYS__;
+  const EVE_START=__EVESTART__, EVE_DECAY=__EVEDECAY__;
+  const ALPHA=__ALPHA__, W1=__W1__, W2=__W2__, W3=__W3__, W4=__W4__;
+  const sm=(o,n,pr,a)=> a<=0 ? (n>0?o/n:pr) : (o+a*pr)/(n+a);   // 베이지안 스무딩
+  const baseRate=(()=>{const o=wdOn.reduce((s,x)=>s+x,0),n=wdTot.reduce((s,x)=>s+x,0);return n?o/n:0.5;})();
   const wdN=['일','월','화','수','목','금','토'];
 
   // 특정 날짜(target)의 방송 확률 예측
-  function predict(target){
+  function predict(target, isToday){
     const twd=target.getDay();
     const prev=new Date(target.getTime()-dayMs);
-    const wdRate = wdTot[twd] ? wdOn[twd]/wdTot[twd] : 0;
+    const wr=sm(wdOn[twd], wdTot[twd], baseRate, ALPHA);
     let rT=0,rO=0;
     for(let t=target.getTime()-dayMs; t>=first.getTime() && rT<30; t-=dayMs){ rT++; if(bset.has(ymdL(new Date(t)))) rO++; }
-    const recentRate = rT?rO/rT:0;
+    const rr=sm(rO, rT, baseRate, ALPHA);
     let wT=0,wO=0;
     for(let t=target.getTime()-dayMs; t>=first.getTime() && wT<8; t-=dayMs){ const dt=new Date(t); if(dt.getDay()===twd){wT++; if(bset.has(ymdL(dt))) wO++;} }
-    const wdRecent = wT?wO/wT:wdRate;
+    const wrec=sm(wO, wT, wr, ALPHA);
     const prevOn=bset.has(ymdL(prev));
-    const durTr = prevOn ? (((dayDur[ymdL(prev)]||0)>=medDayDur)?pLong:pShort) : pAfterOff;
-    let p=Math.round(100*(0.30*wdRecent + 0.20*wdRate + 0.16*recentRate + 0.34*durTr));
+    let durO,durN;
+    if(prevOn){ if((dayDur[ymdL(prev)]||0)>=medDayDur){durO=ln;durN=ld;} else {durO=sn;durN=sd;} } else {durO=a0;durN=b0;}
+    const durTr=sm(durO, durN, baseRate, ALPHA);
+    let p=Math.round(100*(W1*wrec + W2*wr + W3*rr + W4*durTr));
     p=Math.max(2,Math.min(98,p));
     const rest=REST_DAYS.indexOf(twd)>=0;
     if(rest) p=Math.max(2, Math.round(p*__RESTPENALTY__));
@@ -478,6 +496,10 @@ function updateMonthStats(){
     const prevRest=REST_DAYS.indexOf(prev.getDay())>=0;
     const makeup = rest && !prevRest && !prevOn;
     if(makeup) p=Math.min(98, Math.round(p*__MAKEUP__));
+    // 저녁 감쇠: 오늘 아직 방송을 안 켰으면 19시~자정 사이 시간이 갈수록 확률 하락(실시간)
+    if(isToday){ const nowh=new Date(); const hf=nowh.getHours()+nowh.getMinutes()/60;
+      if(hf>=EVE_START && hf<24){ const into=Math.min(hf-EVE_START, 24-EVE_START);
+        p=Math.max(2, Math.round(p*Math.pow(EVE_DECAY, into))); } }
     const lv=p>=65?'high':p>=45?'mid':'low';
     const word=lv==='high'?'뱅온 가능성 높음':lv==='mid'?'지각할 가능성 높음':'노쇼할 가능성 높음';
     return {prob:p, lvl:lv, word, rest, makeup, wd:twd};
@@ -493,7 +515,7 @@ function updateMonthStats(){
   if(todayHas){
     todayCard=["뱅온 ✓","오늘 방송함","high","오늘 이미 방송을 켰어요",""];
   } else {
-    const pT=predict(today);
+    const pT=predict(today, true);
     todayCard=[pT.prob+"%",`오늘(${wdN[pT.wd]}) ${pT.word}`+(pT.rest?' · 정기휴방':''),pT.lvl,"오늘 방송 확률 (참고용)",""];
   }
 
@@ -525,7 +547,7 @@ function updateMonthStats(){
   // 오늘 카드: 확률 + 예상 시작
   let tBig,tLine,tLvl;
   if(todayHas){ tBig="뱅온 ✓"; tLine="오늘 방송함"; tLvl="high"; }
-  else{ const pT=predict(today); tBig=pT.prob+"%"; tLine=`오늘(${wdN[pT.wd]}) ${pT.word}`+(pT.rest?(pT.makeup?' · 정기휴방(대타 가능)':' · 정기휴방'):''); tLvl=pT.lvl; }
+  else{ const pT=predict(today, true); tBig=pT.prob+"%"; tLine=`오늘(${wdN[pT.wd]}) ${pT.word}`+(pT.rest?(pT.makeup?' · 정기휴방(대타 가능)':' · 정기휴방'):''); tLvl=pT.lvl; }
   const cardToday=`<div class="stat ${tLvl}" title="오늘 방송 확률 + 예상 시작 (참고용)"><div class="n">${tBig}</div><div class="l">${tLine}</div><div class="l2">예상 시작 ${predStartFor(todayWd)}</div></div>`;
   // 내일 카드: 확률 + 예상 시작
   const cardTomo=`<div class="stat ${lvl}" title="내일 방송 확률 + 예상 시작 (참고용)"><div class="n">${prob}%</div><div class="l">${predLabel}</div><div class="l2">예상 시작 ${predStartFor(tomoWd)}</div></div>`;
