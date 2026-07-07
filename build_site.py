@@ -22,6 +22,7 @@ import urllib.error
 STREAMER_ID = "allblack1019"      # SOOP 방송국 주소 sooplive.com/station/<여기>
 SINCE = "2026-01-01"              # 달력에 표시할 시작일(이 날짜 이후 방송만 달력에 표시)
 PRED_SINCE = "2025-07-01"         # 확률 계산에 쓸 데이터 시작일(달력보다 길게, 약 12개월). 달력엔 안 보이고 예측에만 사용
+EVAL_SINCE = "2026-07-05"         # 예측성공/실패 표시 & 적중률 계산 시작일(이 날부터의 과거 날만 판정)
 VIDEO_FILE = "intro.mp4"          # 인트로 영상 (assets/ 폴더에 넣기)
 BGM_FILE = "bgm.mp3"              # 배경음악 (assets/ 폴더에 넣기)
 SLASH_TIME = 4.0                  # 영상에서 화면이 찢기는 시점(초)
@@ -141,9 +142,53 @@ def build(items, bid):
     return out, nick, profile
 
 
-def compute_evals(broadcasts, since, pred_since):
-    """과거 각 날을 '그 이전 데이터만'으로 현재 모델(튜닝값)로 예측 → 실제와 비교. 달력 표시용(재현)."""
+def _daily_predict(day, pset, dur, pf):
+    """그 날 이전 데이터로 계산한 '그날의 예측 확률'(0~1). 저녁 감쇠 제외, 과보상 포함. (예측 로그 기록·재현 공용)"""
     import statistics
+    prior = [pf + datetime.timedelta(days=i) for i in range((day - pf).days)]
+    if len(prior) < 20:
+        return None
+    W = PRED_WEIGHTS; A = PRED_ALPHA; pen = REST_PENALTY; boost = MAKEUP_BOOST; REST = set(REST_DAYS)
+    jsday = lambda x: (x.weekday() + 1) % 7
+    def sm(o, n, pr):
+        if A <= 0:
+            return (o / n) if n > 0 else pr
+        return (o + A * pr) / (n + A)
+    onDays = sum(1 for t in prior if t.isoformat() in pset); base = onDays / len(prior)
+    twd = jsday(day)
+    wdOn = sum(1 for t in prior if jsday(t) == twd and t.isoformat() in pset)
+    wdTot = sum(1 for t in prior if jsday(t) == twd)
+    sw = [t for t in reversed(prior) if jsday(t) == twd][:8]
+    wO = sum(1 for t in sw if t.isoformat() in pset); wT = len(sw)
+    r30 = prior[-30:]; rO = sum(1 for t in r30 if t.isoformat() in pset); rT = len(r30)
+    prev = day - datetime.timedelta(days=1); prevOn = prev.isoformat() in pset
+    ondur = [dur[t.isoformat()] for t in prior if t.isoformat() in pset]
+    med = statistics.median(ondur) if ondur else 0
+    ln = ld = sn = sd = a0 = b0 = 0
+    for i in range(len(prior) - 1):
+        t = prior[i]; nxt = (t + datetime.timedelta(days=1)).isoformat() in pset
+        if t.isoformat() in pset:
+            if dur.get(t.isoformat(), 0) >= med: ld += 1; ln += 1 if nxt else 0
+            else: sd += 1; sn += 1 if nxt else 0
+        else: b0 += 1; a0 += 1 if nxt else 0
+    dO, dN = ((ln, ld) if dur.get(prev.isoformat(), 0) >= med else (sn, sd)) if prevOn else (a0, b0)
+    wr = sm(wdOn, wdTot, base); wrec = sm(wO, wT, wr); rr = sm(rO, rT, base); dt = sm(dO, dN, base)
+    p = min(0.98, max(0.02, W[0]*wrec + W[1]*wr + W[2]*rr + W[3]*dt))
+    rest = twd in REST; prevRest = jsday(prev) in REST; makeup = rest and (not prevRest) and (not prevOn)
+    if rest: p = min(0.98, max(0.02, p * pen))
+    if makeup: p = min(0.98, max(0.02, p * boost))
+    gap = 1
+    for t in reversed(prior):
+        if t.isoformat() in pset:
+            break
+        gap += 1
+    if gap > OVERDUE_AFTER:
+        p = min(0.98, p * min(OVERDUE_MAX, 1 + OVERDUE_STEP * (gap - OVERDUE_AFTER)))
+    return p
+
+
+def compute_evals(broadcasts, eval_since, pred_since, log):
+    """저장된 예측 로그(log)가 있으면 그 값으로, 없으면 재현(_daily_predict)으로 성공/실패 판정."""
     pset = set(); dateset = set(); dur = {}
     for b in broadcasts:
         pd = b["pdate"]; pset.add(pd); dur[pd] = dur.get(pd, 0) + (b.get("duration_ms") or 0)
@@ -153,51 +198,21 @@ def compute_evals(broadcasts, since, pred_since):
     Dt = datetime.date.fromisoformat
     today = (datetime.datetime.utcnow() + datetime.timedelta(hours=9)).date()  # KST
     pf = Dt(pred_since) if pred_since else Dt(min(pset))
-    start = Dt(since) if since else pf
-    W = PRED_WEIGHTS; A = PRED_ALPHA; pen = REST_PENALTY; boost = MAKEUP_BOOST; REST = set(REST_DAYS)
-    jsday = lambda x: (x.weekday() + 1) % 7
-    def sm(o, n, pr):
-        if A <= 0:
-            return (o / n) if n > 0 else pr
-        return (o + A * pr) / (n + A)
+    start = Dt(eval_since) if eval_since else pf
     evals = {}; ok = 0; tot = 0
     d = start
     while d < today:
-        prior = [pf + datetime.timedelta(days=i) for i in range((d - pf).days)]
-        if len(prior) < 20:
-            d += datetime.timedelta(days=1); continue
-        onDays = sum(1 for t in prior if t.isoformat() in pset); totDays = len(prior)
-        base = onDays / totDays if totDays else 0.5
-        twd = jsday(d)
-        wdOn = sum(1 for t in prior if jsday(t) == twd and t.isoformat() in pset)
-        wdTot = sum(1 for t in prior if jsday(t) == twd)
-        sw = [t for t in reversed(prior) if jsday(t) == twd][:8]
-        wO = sum(1 for t in sw if t.isoformat() in pset); wT = len(sw)
-        r30 = prior[-30:]; rO = sum(1 for t in r30 if t.isoformat() in pset); rT = len(r30)
-        prev = d - datetime.timedelta(days=1); prevOn = prev.isoformat() in pset
-        ondur = [dur[t.isoformat()] for t in prior if t.isoformat() in pset]
-        med = statistics.median(ondur) if ondur else 0
-        ln = ld = sn = sd = a0 = b0 = 0
-        for i in range(len(prior) - 1):
-            t = prior[i]; nxt = (t + datetime.timedelta(days=1)).isoformat() in pset
-            if t.isoformat() in pset:
-                if dur.get(t.isoformat(), 0) >= med: ld += 1; ln += 1 if nxt else 0
-                else: sd += 1; sn += 1 if nxt else 0
-            else: b0 += 1; a0 += 1 if nxt else 0
-        if prevOn:
-            dO, dN = (ln, ld) if dur.get(prev.isoformat(), 0) >= med else (sn, sd)
+        ds = d.isoformat()
+        if ds in log:
+            pred = bool(log[ds].get("pred"))     # 그날 실제로 기록한 예측(로그 우선)
         else:
-            dO, dN = a0, b0
-        wr = sm(wdOn, wdTot, base); wrec = sm(wO, wT, wr); rr = sm(rO, rT, base); dt = sm(dO, dN, base)
-        p = W[0]*wrec + W[1]*wr + W[2]*rr + W[3]*dt
-        p = min(0.98, max(0.02, p))
-        rest = twd in REST; prevRest = jsday(prev) in REST; makeup = rest and (not prevRest) and (not prevOn)
-        if rest: p = min(0.98, max(0.02, p * pen))
-        if makeup: p = min(0.98, max(0.02, p * boost))
-        pred = p >= 0.5
-        actual = d.isoformat() in dateset      # 달력(초록) 기준
-        evals[d.isoformat()] = (pred == actual)
-        ok += 1 if pred == actual else 0; tot += 1
+            p = _daily_predict(d, pset, dur, pf)  # 로그 없는 과거 날은 재현
+            if p is None:
+                d += datetime.timedelta(days=1); continue
+            pred = p >= 0.5
+        actual = ds in dateset
+        evals[ds] = (pred == actual)
+        ok += 1 if evals[ds] else 0; tot += 1
         d += datetime.timedelta(days=1)
     return evals, (round(100 * ok / tot) if tot else 0)
 
@@ -209,8 +224,26 @@ def main():
     if not broadcasts:
         raise SystemExit("다시보기를 찾지 못했습니다. STREAMER_ID를 확인하세요: " + bid)
 
-    evals, eval_acc = compute_evals(broadcasts, SINCE, PRED_SINCE)
-    print("예측 재현: %d일 평가, 적중률 %d%%" % (len(evals), eval_acc))
+    # 예측 로그(그날 실제로 낸 예측을 저장) 로드 → 오늘 예측을 한 번만 기록(이후 고정) → 성공/실패 판정
+    LOG_FILE = "predictions.json"
+    try:
+        pred_log = json.load(open(LOG_FILE, encoding="utf-8"))
+    except Exception:
+        pred_log = {}
+    _pset = set(); _dur = {}
+    for b in broadcasts:
+        _pset.add(b["pdate"]); _dur[b["pdate"]] = _dur.get(b["pdate"], 0) + (b.get("duration_ms") or 0)
+    _today = (datetime.datetime.utcnow() + datetime.timedelta(hours=9)).date()
+    _pf = datetime.date.fromisoformat(PRED_SINCE) if PRED_SINCE else min(datetime.date.fromisoformat(x) for x in _pset)
+    _p = _daily_predict(_today, _pset, _dur, _pf)
+    _ts = _today.isoformat()
+    if _p is not None and _ts not in pred_log:
+        pred_log[_ts] = {"pred": bool(_p >= 0.5), "p": round(_p * 100)}
+        with open(LOG_FILE, "w", encoding="utf-8") as f:
+            json.dump(pred_log, f, ensure_ascii=False, indent=0, sort_keys=True)
+        print("예측 로그 기록:", _ts, pred_log[_ts])
+    evals, eval_acc = compute_evals(broadcasts, EVAL_SINCE, PRED_SINCE, pred_log)
+    print("예측 판정: %d일, 적중률 %d%% (로그 %d일)" % (len(evals), eval_acc, len(pred_log)))
 
     payload = {
         "bid": bid, "nick": nick, "profile": profile,
@@ -301,6 +334,9 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     font-family:inherit;text-decoration:none}
   .navtab:hover{border-color:var(--accent)}
   .navtab.active{background:linear-gradient(#f4e4a8,#d4af37);color:#111;border-color:#d4af37}
+  .navacc{margin-left:auto;align-self:center;font-size:14px;font-weight:700;color:var(--text);
+    background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:8px 14px;white-space:nowrap}
+  @media(max-width:560px){.navacc{margin-left:0;font-size:13px;padding:7px 12px}}
   .navlink{display:inline-flex;align-items:center;gap:5px;background:var(--panel2);
     border:1px solid var(--line);color:var(--text);border-radius:10px;padding:9px 16px;
     font-size:14px;font-weight:600;text-decoration:none}
@@ -338,10 +374,10 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .cell.off .d{color:#f3c4c4}
   .cell.today{outline:2px solid var(--today);outline-offset:-2px}
   .cell .hrs{margin-top:auto;font-size:11px;color:#7fd3a0;font-weight:600;line-height:1.2}
-  .cell .pred{font-size:9px;font-weight:800;line-height:1.05;margin-top:2px}
-  .cell .pred.ok{color:#86efac}
-  .cell .pred.no{color:#fca5a5}
-  @media(max-width:560px){.cell .pred{font-size:8px}}
+  .cell .pred{font-size:9px;font-weight:800;line-height:1.1;margin-top:2px;padding:1px 4px;border-radius:5px;align-self:flex-start}
+  .cell .pred.ok{color:#eafff2;background:#0b7a39;border:1px solid #17b352}
+  .cell .pred.no{color:#ffecec;background:#9c1414;border:1px solid #e23c3c}
+  @media(max-width:560px){.cell .pred{font-size:8px;padding:0 3px}}
   .cell .cnt{position:absolute;top:5px;right:7px;font-size:11px;color:var(--on);font-weight:700}
   .legend{margin:14px 2px;color:var(--muted);font-size:12px;display:flex;gap:16px;align-items:center;flex-wrap:wrap}
   .legend .k{display:inline-flex;align-items:center;gap:6px}
@@ -456,6 +492,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   </header>
   <nav class="nav" id="nav">
     <a class="navtab active" href="index.html">📅 방송 달력</a>
+    <span class="navacc" id="navAcc"></span>
   </nav>
   <div class="stats" id="stats"></div>
   <div class="calbar">
@@ -470,7 +507,6 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     <span class="k"><span class="box" style="background:rgba(252,165,165,.18);border:1px solid rgba(252,165,165,.4)"></span> 노쇼(미방송)</span>
     <span class="k"><span class="box" style="background:transparent;outline:2px solid #f59e0b"></span> 오늘</span>
     <span class="k">초록 날짜를 클릭 → 그날 방송 보기</span>
-    <span class="k" id="evalAccK"></span>
   </div>
   <div class="detail" id="detail">
     <div class="empty">달력에서 초록색으로 표시된 날짜를 눌러보세요.</div>
@@ -645,7 +681,7 @@ document.getElementById('sub').innerHTML=`@${DATA.bid} · 방송 기록 ${firstD
 const pf=document.getElementById('pf');
 if(DATA.profile){pf.src=DATA.profile;pf.onerror=()=>pf.style.display='none';}else{pf.style.display='none';}
 document.getElementById('foot').textContent=`데이터 갱신: ${DATA.generated} · 다시보기(VOD) 기준 · SOOP 비공식 API`;
-(function(){const ea=document.getElementById('evalAccK'); if(ea && DATA.evalAcc!=null) ea.innerHTML='🎯 예측 적중률 <b style="color:#f4e4a8">'+DATA.evalAcc+'%</b> <span style="color:var(--muted)">(재현 기준)</span>';})();
+(function(){const ea=document.getElementById('navAcc'); if(ea && DATA.evalAcc!=null) ea.innerHTML='🎯 예측 적중률 <b style="color:#f4e4a8">'+DATA.evalAcc+'%</b>';})();
 const dows=['일','월','화','수','목','금','토'];
 document.getElementById('dow').innerHTML=
   dows.map((d,i)=>`<div class="dow ${i===0?'sun':i===6?'sat':''}">${d}</div>`).join('');
