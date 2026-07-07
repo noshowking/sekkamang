@@ -20,7 +20,8 @@ import urllib.error
 
 # ================= 설정 (여기만 바꾸면 됨) =================
 STREAMER_ID = "allblack1019"      # SOOP 방송국 주소 sooplive.com/station/<여기>
-SINCE = "2026-01-01"              # 이 날짜 이후 방송만 표시. 전체를 보려면 "" (빈 문자열)
+SINCE = "2026-01-01"              # 달력에 표시할 시작일(이 날짜 이후 방송만 달력에 표시)
+PRED_SINCE = "2025-07-01"         # 확률 계산에 쓸 데이터 시작일(달력보다 길게, 약 12개월). 달력엔 안 보이고 예측에만 사용
 VIDEO_FILE = "intro.mp4"          # 인트로 영상 (assets/ 폴더에 넣기)
 BGM_FILE = "bgm.mp3"              # 배경음악 (assets/ 폴더에 넣기)
 SLASH_TIME = 4.0                  # 영상에서 화면이 찢기는 시점(초)
@@ -30,6 +31,10 @@ MAKEUP_BOOST = 1.5               # (백테스트 튜닝) 휴방일인데 전날 
 # 확률 예측 가중치 [wdRecent(최근 같은요일), wdRate(전체 요일), recentRate(최근30일 빈도), durTr(직전날 전이)] — 백테스트로 튜닝
 PRED_WEIGHTS = [0.24, 0.10, 0.50, 0.16]
 PRED_ALPHA = 3                   # 베이지안 스무딩 강도: 표본 적은 통계일수록 전체평균 쪽으로 당김(0=끔)
+# '과보상'(오늘만): 마지막 방송 이후 경과일이 길수록 오늘 뱅온 확률을 올림
+OVERDUE_AFTER = 1                # 경과일이 이 값을 넘으면 상향 시작(1이면 이틀 이상 쉬었을 때부터)
+OVERDUE_STEP  = 0.12             # 경과일 1일당 상향 폭(배수에 가산). 0이면 끔
+OVERDUE_MAX   = 2.0              # 상향 배수 상한(너무 커지지 않게)
 DAY_START_HOUR = 7               # 이 시각 이전(새벽)에 '시작'한 방송은 전날 방송으로 간주(확률 계산용). 달력 표시는 업로드일 그대로.
 EVENING_START = 19               # 저녁 감쇠 시작 시각(24h). 오늘 미방송이면 이 시각부터 자정까지 확률이 시간마다 감소
 EVENING_DECAY = 0.95             # 1시간 경과마다 곱하는 감쇠 배수(0~1). 낮출수록 더 빨리 떨어짐
@@ -106,8 +111,9 @@ def build(items, bid):
         day_str = start.strftime("%Y-%m-%d")   # 방송을 켠(시작) 시점 기준 (달력 표시용)
         # 확률 계산용 '방송일': 새벽(DAY_START_HOUR 이전)에 '시작'한 방송은 전날 방송으로 간주
         pdate = (start - datetime.timedelta(hours=DAY_START_HOUR)).strftime("%Y-%m-%d")
-        if SINCE and day_str < SINCE:
-            continue          # 지정한 날짜 이전 방송은 제외
+        cutoff = PRED_SINCE or SINCE
+        if cutoff and day_str < cutoff:
+            continue          # 예측용 데이터 시작일 이전은 제외(달력 표시는 JS에서 SINCE로 다시 자름)
         tno = it.get("title_no")
         thumb = ucc.get("thumb") or ""
         if thumb.startswith("//"):
@@ -144,6 +150,7 @@ def main():
 
     payload = {
         "bid": bid, "nick": nick, "profile": profile,
+        "since": SINCE, "predSince": PRED_SINCE,
         "generated": (datetime.datetime.utcnow() + datetime.timedelta(hours=9)).strftime("%Y-%m-%d %H:%M KST"),
         "broadcasts": broadcasts,
     }
@@ -164,6 +171,9 @@ def main():
         h = h.replace("__W2__", str(PRED_WEIGHTS[1]))
         h = h.replace("__W3__", str(PRED_WEIGHTS[2]))
         h = h.replace("__W4__", str(PRED_WEIGHTS[3]))
+        h = h.replace("__ODAFTER__", str(OVERDUE_AFTER))
+        h = h.replace("__ODSTEP__", str(OVERDUE_STEP))
+        h = h.replace("__ODMAX__", str(OVERDUE_MAX))
         h = h.replace("__LINKS__", json.dumps(LINKS, ensure_ascii=False))
         h = h.replace("__NICK__", nick or bid)
         h = h.replace("/*__DATA__*/null", json.dumps(payload, ensure_ascii=False))
@@ -400,7 +410,8 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 <script>
 const DATA = /*__DATA__*/null;
 const byDate={};
-for(const b of DATA.broadcasts){(byDate[b.date]=byDate[b.date]||[]).push(b);}
+const CAL_SINCE=DATA.since||"";   // 달력에는 SINCE 이후만 표시(예측용 이전 데이터는 제외)
+for(const b of DATA.broadcasts){ if(CAL_SINCE && b.date<CAL_SINCE) continue; (byDate[b.date]=byDate[b.date]||[]).push(b); }
 const allDates=Object.keys(byDate).sort();
 const firstDate=allDates[0], lastDate=allDates[allDates.length-1];
 function bToday(){const d=new Date();d.setHours(0,0,0,0);return d;}
@@ -440,7 +451,7 @@ function updateMonthStats(){
   // ---- 내일 방송 예측 (과거 요일별 + 최근 빈도 기반 추정) ----
   const dayMs=86400000;
   const today=bToday();
-  const first=new Date(firstDate+"T00:00:00");
+  const first=new Date((DATA.predSince||firstDate)+"T00:00:00");   // 확률은 12개월(predSince)부터 계산
   const ymdL=(dt)=>dt.getFullYear()+"-"+pad(dt.getMonth()+1)+"-"+pad(dt.getDate());
   const wdTot=[0,0,0,0,0,0,0], wdOn=[0,0,0,0,0,0,0];
   for(let t=first.getTime(); t<=today.getTime(); t+=dayMs){
@@ -469,6 +480,7 @@ function updateMonthStats(){
   const REST_DAYS=__RESTDAYS__;
   const EVE_START=__EVESTART__, EVE_DECAY=__EVEDECAY__;
   const ALPHA=__ALPHA__, W1=__W1__, W2=__W2__, W3=__W3__, W4=__W4__;
+  const OD_AFTER=__ODAFTER__, OD_STEP=__ODSTEP__, OD_MAX=__ODMAX__;
   const sm=(o,n,pr,a)=> a<=0 ? (n>0?o/n:pr) : (o+a*pr)/(n+a);   // 베이지안 스무딩
   const baseRate=(()=>{const o=wdOn.reduce((s,x)=>s+x,0),n=wdTot.reduce((s,x)=>s+x,0);return n?o/n:0.5;})();
   const wdN=['일','월','화','수','목','금','토'];
@@ -497,7 +509,12 @@ function updateMonthStats(){
     const makeup = rest && !prevRest && !prevOn;
     if(makeup) p=Math.min(98, Math.round(p*__MAKEUP__));
     // 저녁 감쇠: 오늘 아직 방송을 안 켰으면 19시~자정 사이 시간이 갈수록 확률 하락(실시간)
-    if(isToday){ const nowh=new Date(); const hf=nowh.getHours()+nowh.getMinutes()/60;
+    if(isToday){
+      // 과보상: 마지막 방송 이후 경과일이 길수록 오늘 확률 ↑
+      let gap=1; for(let t=target.getTime()-dayMs; t>=first.getTime(); t-=dayMs){ if(bset.has(ymdL(new Date(t)))) break; gap++; }
+      if(gap>OD_AFTER) p=Math.min(98, Math.round(p*Math.min(OD_MAX, 1+OD_STEP*(gap-OD_AFTER))));
+      // 저녁 감쇠: 19시~자정 사이 시간이 갈수록 확률 하락
+      const nowh=new Date(); const hf=nowh.getHours()+nowh.getMinutes()/60;
       if(hf>=EVE_START && hf<24){ const into=Math.min(hf-EVE_START, 24-EVE_START);
         p=Math.max(2, Math.round(p*Math.pow(EVE_DECAY, into))); } }
     const lv=p>=65?'high':p>=45?'mid':'low';
