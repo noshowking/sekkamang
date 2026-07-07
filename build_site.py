@@ -204,15 +204,16 @@ def compute_evals(broadcasts, eval_since, pred_since, log):
     while d < today:
         ds = d.isoformat()
         if ds in log:
-            pred = bool(log[ds].get("pred"))     # 그날 실제로 기록한 예측(로그 우선)
+            p_pct = int(log[ds].get("p", 50)); pred = bool(log[ds].get("pred"))   # 그날 기록한 예측(로그 우선)
         else:
-            p = _daily_predict(d, pset, dur, pf)  # 로그 없는 과거 날은 재현
-            if p is None:
+            pv = _daily_predict(d, pset, dur, pf)                                  # 로그 없는 과거 날은 재현
+            if pv is None:
                 d += datetime.timedelta(days=1); continue
-            pred = p >= 0.5
+            p_pct = round(pv * 100); pred = pv >= 0.5
         actual = ds in dateset
-        evals[ds] = (pred == actual)
-        ok += 1 if evals[ds] else 0; tot += 1
+        okk = (pred == actual)
+        evals[ds] = {"ok": okk, "p": p_pct, "pred": pred}
+        ok += 1 if okk else 0; tot += 1
         d += datetime.timedelta(days=1)
     return evals, (round(100 * ok / tot) if tot else 0)
 
@@ -374,10 +375,10 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .cell.off .d{color:#f3c4c4}
   .cell.today{outline:2px solid var(--today);outline-offset:-2px}
   .cell .hrs{margin-top:auto;font-size:11px;color:#7fd3a0;font-weight:600;line-height:1.2}
-  .cell .pred{font-size:9px;font-weight:800;line-height:1.1;margin-top:2px;padding:1px 4px;border-radius:5px;align-self:flex-start}
+  .cell .pred{font-size:8.5px;font-weight:800;line-height:1.2;margin-top:2px;padding:1px 4px;border-radius:5px;align-self:flex-start;text-align:center}
   .cell .pred.ok{color:#eafff2;background:#0b7a39;border:1px solid #17b352}
   .cell .pred.no{color:#ffecec;background:#9c1414;border:1px solid #e23c3c}
-  @media(max-width:560px){.cell .pred{font-size:8px;padding:0 3px}}
+  @media(max-width:560px){.cell .pred{font-size:7.5px;padding:0 3px}}
   .cell .cnt{position:absolute;top:5px;right:7px;font-size:11px;color:var(--on);font-weight:700}
   .legend{margin:14px 2px;color:var(--muted);font-size:12px;display:flex;gap:16px;align-items:center;flex-wrap:wrap}
   .legend .k{display:inline-flex;align-items:center;gap:6px}
@@ -734,7 +735,7 @@ function render(){
     const ds=`${y}-${pad(m+1)}-${pad(d)}`;const list=byDate[ds];const isT=ds===todayStr;
     const dly=`animation-delay:${Math.min((startDow+d-1)*12,320)}ms`;
     const pv=(DATA.evals && (ds in DATA.evals))?DATA.evals[ds]:null;
-    const predH = pv===null ? '' : `<div class="pred ${pv?'ok':'no'}">${pv?'예측성공!':'예측실패..'}</div>`;
+    const predH = (pv===null||typeof pv!=='object') ? '' : `<div class="pred ${pv.ok?'ok':'no'}">${pv.p}% ${pv.pred?'뱅온':'노쇼'}예측<br>예측${pv.ok?'성공!':'실패..'}</div>`;
     if(list){
       const totMs=list.reduce((s,b)=>s+(b.duration_ms||0),0);
       const hlabel=totMs>=3600000?(totMs/3600000).toFixed(1).replace(/\.0$/,'')+'시간':Math.round(totMs/60000)+'분';
