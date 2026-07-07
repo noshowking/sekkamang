@@ -40,7 +40,7 @@ OVERDUE_STEP  = 0.12             # 경과일 1일당 상향 폭(배수에 가산
 OVERDUE_MAX   = 2.0              # 상향 배수 상한(너무 커지지 않게)
 DAY_START_HOUR = 7               # 이 시각 이전(새벽)에 '시작'한 방송은 전날 방송으로 간주(확률 계산용). 달력 표시는 업로드일 그대로.
 EVENING_START = 19               # 저녁 감쇠 시작 시각(24h). 오늘 미방송이면 이 시각부터 자정까지 확률이 시간마다 감소
-EVENING_DECAY = 0.95             # 1시간 경과마다 곱하는 감쇠 배수(0~1). 낮출수록 더 빨리 떨어짐
+EVENING_DECAY = 0.9692           # 1시간 경과마다 곱하는 감쇠 배수(0~1). 자정(19→24시, 5시간)엔 ×0.855. 낮출수록 더 빨리 떨어짐
 # 목차(상단 메뉴)에 넣을 외부 링크. 이름:주소 형태. 원하면 주석 풀고 추가하세요.
 LINKS = {
     "방송국(SOOP)": "https://www.sooplive.com/station/allblack1019",
@@ -189,6 +189,42 @@ def _daily_predict(day, pset, dur, pf):
     return p
 
 
+def _eve_factor(hour):
+    """저녁 감쇠 배수. EVENING_START 이후 1시간마다 EVENING_DECAY를 곱함(자정에서 최대)."""
+    if hour < EVENING_START:
+        return 1.0
+    into = min(hour - EVENING_START, 24 - EVENING_START)
+    return EVENING_DECAY ** into
+
+
+def _start_hours_map(broadcasts):
+    """날짜(date) → 그날 가장 이른 방송 '켠 시각'(시.분 소수). 결과시점 감쇠용."""
+    sh = {}
+    for b in broadcasts:
+        s = b.get("start") or ""
+        if len(s) < 16:
+            continue
+        try:
+            hh = int(s[11:13]) + int(s[14:16]) / 60.0
+        except ValueError:
+            continue
+        dd = b["date"]
+        if dd not in sh or hh < sh[dd]:
+            sh[dd] = hh
+    return sh
+
+
+def _logged_predict(day, pset, dur, pf, dateset, start_hours):
+    """예측 로그에 저장할 '결과 시점' 확률(0~1). 저녁 감쇠 포함.
+       방송일 → 방송을 켠 시각 기준 감쇠 / 노쇼일 → 자정 직전(최대) 감쇠."""
+    base = _daily_predict(day, pset, dur, pf)
+    if base is None:
+        return None
+    ds = day.isoformat()
+    hour = start_hours.get(ds, 12.0) if ds in dateset else 23.999
+    return min(0.98, max(0.02, base * _eve_factor(hour)))
+
+
 def compute_evals(broadcasts, eval_since, pred_since, log):
     """저장된 예측 로그(log)가 있으면 그 값으로, 없으면 재현(_daily_predict)으로 성공/실패 판정."""
     pset = set(); dateset = set(); dur = {}
@@ -197,6 +233,7 @@ def compute_evals(broadcasts, eval_since, pred_since, log):
         dateset.add(b["date"])
     if not pset:
         return {}, 0
+    start_hours = _start_hours_map(broadcasts)
     Dt = datetime.date.fromisoformat
     today = (datetime.datetime.utcnow() + datetime.timedelta(hours=9)).date()  # KST
     pf = Dt(pred_since) if pred_since else Dt(min(pset))
@@ -210,13 +247,14 @@ def compute_evals(broadcasts, eval_since, pred_since, log):
         if ds in log:
             p_pct = int(log[ds].get("p", 50)); pred = bool(log[ds].get("pred"))   # 그날 기록한 예측(로그 우선)
         else:
-            pv = _daily_predict(d, pset, dur, pf)                                  # 로그 없는 과거 날은 재현
+            pv = _logged_predict(d, pset, dur, pf, dateset, start_hours)           # 로그 없으면 결과시점 확률로 재현
             if pv is None:
                 d += datetime.timedelta(days=1); continue
             p_pct = round(pv * 100); pred = pv >= 0.5
         actual = ds in dateset
-        if NEUTRAL_LOW <= p_pct <= NEUTRAL_HIGH:          # 45~55%는 예측 불가(유보) → 판정·적중률에서 제외
+        if NEUTRAL_LOW <= p_pct <= NEUTRAL_HIGH:          # 45~55%는 예측불가 → 실패로 집계
             evals[ds] = {"neutral": True, "p": p_pct}
+            tot += 1                                      # 적중률 분모에 포함(맞힘엔 미포함=실패 취급)
         else:
             okk = (pred == actual)
             evals[ds] = {"ok": okk, "p": p_pct, "pred": pred}
@@ -238,18 +276,30 @@ def main():
         pred_log = json.load(open(LOG_FILE, encoding="utf-8"))
     except Exception:
         pred_log = {}
-    _pset = set(); _dur = {}
+    _pset = set(); _dur = {}; _dateset = set()
     for b in broadcasts:
         _pset.add(b["pdate"]); _dur[b["pdate"]] = _dur.get(b["pdate"], 0) + (b.get("duration_ms") or 0)
+        _dateset.add(b["date"])
+    _starth = _start_hours_map(broadcasts)
     _today = (datetime.datetime.utcnow() + datetime.timedelta(hours=9)).date()
     _pf = datetime.date.fromisoformat(PRED_SINCE) if PRED_SINCE else min(datetime.date.fromisoformat(x) for x in _pset)
-    _p = _daily_predict(_today, _pset, _dur, _pf)
-    _ts = _today.isoformat()
-    if _p is not None and _ts not in pred_log:
-        pred_log[_ts] = {"pred": bool(_p >= 0.5), "p": round(_p * 100)}
+    # 결과가 확정된 날(과거 전체 + 오늘 방송 확정 시)의 '결과 시점'(저녁감쇠 포함) 예측을 한 번만 기록하고 고정.
+    _changed = False
+    _dd = datetime.date.fromisoformat(EVAL_SINCE) if EVAL_SINCE else _pf
+    while _dd <= _today:
+        _dsi = _dd.isoformat()
+        if _dd == _today and _dsi not in _dateset:
+            break                      # 오늘 아직 미방송 → 저녁에 켤 수 있어 기록 보류
+        if _dsi not in pred_log:
+            _pp = _logged_predict(_dd, _pset, _dur, _pf, _dateset, _starth)
+            if _pp is not None:
+                pred_log[_dsi] = {"pred": bool(_pp >= 0.5), "p": round(_pp * 100)}
+                _changed = True
+        _dd += datetime.timedelta(days=1)
+    if _changed:
         with open(LOG_FILE, "w", encoding="utf-8") as f:
             json.dump(pred_log, f, ensure_ascii=False, indent=0, sort_keys=True)
-        print("예측 로그 기록:", _ts, pred_log[_ts])
+        print("예측 로그 갱신:", len(pred_log), "일")
     evals, eval_acc = compute_evals(broadcasts, EVAL_SINCE, PRED_SINCE, pred_log)
     print("예측 판정: %d일, 적중률 %d%% (로그 %d일)" % (len(evals), eval_acc, len(pred_log)))
 
@@ -745,7 +795,7 @@ function render(){
     const pv=(DATA.evals && (ds in DATA.evals))?DATA.evals[ds]:null;
     let predH='';
     if(pv && typeof pv==='object'){
-      if(pv.neutral) predH=`<div class="pred mid">${pv.p}%<br>예측유보</div>`;
+      if(pv.neutral) predH=`<div class="pred no">${pv.p}%<br>예측불가..</div>`;
       else predH=`<div class="pred ${pv.ok?'ok':'no'}">${pv.p}% ${pv.pred?'뱅온':'노쇼'}예측<br>예측${pv.ok?'성공!':'실패..'}</div>`;
     }
     if(list){
