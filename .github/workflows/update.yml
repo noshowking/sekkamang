@@ -45,21 +45,18 @@ jobs:
         id: deployment
         uses: actions/deploy-pages@v4
 
-      # 60일간 활동이 없으면 GitHub가 예약 실행을 자동 중지함.
-      # 서드파티 액션 없이, 마지막 커밋이 40일 이상 지났을 때만 빈 커밋을 남겨 방지.
-      - name: 60일 자동중지 방지 (keepalive, 순수 git)
+      # 오늘 예측을 기록한 predictions.json이 바뀌었으면 저장소에 커밋(그날 예측을 영구 보존).
+      # 하루 한 번꼴로 커밋되므로 60일 자동중지도 자연히 방지됨.
+      - name: 예측 로그 커밋 (predictions.json)
         if: always()
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          LAST=$(git log -1 --format=%ct 2>/dev/null || echo 0)
-          NOW=$(date +%s)
-          DAYS=$(( (NOW - LAST) / 86400 ))
-          echo "마지막 커밋 이후 ${DAYS}일"
-          if [ "$DAYS" -ge 40 ]; then
-            git commit --allow-empty -m "chore: keepalive (예약 실행 유지)"
-            git push
-            echo "keepalive 커밋 push 완료"
+          if [ -n "$(git status --porcelain predictions.json)" ]; then
+            git add predictions.json
+            git commit -m "chore: 예측 로그 업데이트 ($(date -u +%Y-%m-%d))"
+            git push || echo "push 실패(다음 실행 때 재시도)"
+            echo "예측 로그 커밋 완료"
           else
-            echo "아직 40일 미만 → keepalive 생략"
+            echo "예측 로그 변경 없음"
           fi
