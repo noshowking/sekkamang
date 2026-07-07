@@ -141,6 +141,67 @@ def build(items, bid):
     return out, nick, profile
 
 
+def compute_evals(broadcasts, since, pred_since):
+    """과거 각 날을 '그 이전 데이터만'으로 현재 모델(튜닝값)로 예측 → 실제와 비교. 달력 표시용(재현)."""
+    import statistics
+    pset = set(); dateset = set(); dur = {}
+    for b in broadcasts:
+        pd = b["pdate"]; pset.add(pd); dur[pd] = dur.get(pd, 0) + (b.get("duration_ms") or 0)
+        dateset.add(b["date"])
+    if not pset:
+        return {}, 0
+    Dt = datetime.date.fromisoformat
+    today = (datetime.datetime.utcnow() + datetime.timedelta(hours=9)).date()  # KST
+    pf = Dt(pred_since) if pred_since else Dt(min(pset))
+    start = Dt(since) if since else pf
+    W = PRED_WEIGHTS; A = PRED_ALPHA; pen = REST_PENALTY; boost = MAKEUP_BOOST; REST = set(REST_DAYS)
+    jsday = lambda x: (x.weekday() + 1) % 7
+    def sm(o, n, pr):
+        if A <= 0:
+            return (o / n) if n > 0 else pr
+        return (o + A * pr) / (n + A)
+    evals = {}; ok = 0; tot = 0
+    d = start
+    while d < today:
+        prior = [pf + datetime.timedelta(days=i) for i in range((d - pf).days)]
+        if len(prior) < 20:
+            d += datetime.timedelta(days=1); continue
+        onDays = sum(1 for t in prior if t.isoformat() in pset); totDays = len(prior)
+        base = onDays / totDays if totDays else 0.5
+        twd = jsday(d)
+        wdOn = sum(1 for t in prior if jsday(t) == twd and t.isoformat() in pset)
+        wdTot = sum(1 for t in prior if jsday(t) == twd)
+        sw = [t for t in reversed(prior) if jsday(t) == twd][:8]
+        wO = sum(1 for t in sw if t.isoformat() in pset); wT = len(sw)
+        r30 = prior[-30:]; rO = sum(1 for t in r30 if t.isoformat() in pset); rT = len(r30)
+        prev = d - datetime.timedelta(days=1); prevOn = prev.isoformat() in pset
+        ondur = [dur[t.isoformat()] for t in prior if t.isoformat() in pset]
+        med = statistics.median(ondur) if ondur else 0
+        ln = ld = sn = sd = a0 = b0 = 0
+        for i in range(len(prior) - 1):
+            t = prior[i]; nxt = (t + datetime.timedelta(days=1)).isoformat() in pset
+            if t.isoformat() in pset:
+                if dur.get(t.isoformat(), 0) >= med: ld += 1; ln += 1 if nxt else 0
+                else: sd += 1; sn += 1 if nxt else 0
+            else: b0 += 1; a0 += 1 if nxt else 0
+        if prevOn:
+            dO, dN = (ln, ld) if dur.get(prev.isoformat(), 0) >= med else (sn, sd)
+        else:
+            dO, dN = a0, b0
+        wr = sm(wdOn, wdTot, base); wrec = sm(wO, wT, wr); rr = sm(rO, rT, base); dt = sm(dO, dN, base)
+        p = W[0]*wrec + W[1]*wr + W[2]*rr + W[3]*dt
+        p = min(0.98, max(0.02, p))
+        rest = twd in REST; prevRest = jsday(prev) in REST; makeup = rest and (not prevRest) and (not prevOn)
+        if rest: p = min(0.98, max(0.02, p * pen))
+        if makeup: p = min(0.98, max(0.02, p * boost))
+        pred = p >= 0.5
+        actual = d.isoformat() in dateset      # 달력(초록) 기준
+        evals[d.isoformat()] = (pred == actual)
+        ok += 1 if pred == actual else 0; tot += 1
+        d += datetime.timedelta(days=1)
+    return evals, (round(100 * ok / tot) if tot else 0)
+
+
 def main():
     bid = os.environ.get("STREAMER_ID", STREAMER_ID)
     items = crawl(bid)
@@ -148,9 +209,13 @@ def main():
     if not broadcasts:
         raise SystemExit("다시보기를 찾지 못했습니다. STREAMER_ID를 확인하세요: " + bid)
 
+    evals, eval_acc = compute_evals(broadcasts, SINCE, PRED_SINCE)
+    print("예측 재현: %d일 평가, 적중률 %d%%" % (len(evals), eval_acc))
+
     payload = {
         "bid": bid, "nick": nick, "profile": profile,
         "since": SINCE, "predSince": PRED_SINCE,
+        "evals": evals, "evalAcc": eval_acc,
         "generated": (datetime.datetime.utcnow() + datetime.timedelta(hours=9)).strftime("%Y-%m-%d %H:%M KST"),
         "broadcasts": broadcasts,
     }
@@ -273,6 +338,10 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .cell.off .d{color:#f3c4c4}
   .cell.today{outline:2px solid var(--today);outline-offset:-2px}
   .cell .hrs{margin-top:auto;font-size:11px;color:#7fd3a0;font-weight:600;line-height:1.2}
+  .cell .pred{font-size:9px;font-weight:800;line-height:1.05;margin-top:2px}
+  .cell .pred.ok{color:#86efac}
+  .cell .pred.no{color:#fca5a5}
+  @media(max-width:560px){.cell .pred{font-size:8px}}
   .cell .cnt{position:absolute;top:5px;right:7px;font-size:11px;color:var(--on);font-weight:700}
   .legend{margin:14px 2px;color:var(--muted);font-size:12px;display:flex;gap:16px;align-items:center;flex-wrap:wrap}
   .legend .k{display:inline-flex;align-items:center;gap:6px}
@@ -401,6 +470,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     <span class="k"><span class="box" style="background:rgba(252,165,165,.18);border:1px solid rgba(252,165,165,.4)"></span> 노쇼(미방송)</span>
     <span class="k"><span class="box" style="background:transparent;outline:2px solid #f59e0b"></span> 오늘</span>
     <span class="k">초록 날짜를 클릭 → 그날 방송 보기</span>
+    <span class="k" id="evalAccK"></span>
   </div>
   <div class="detail" id="detail">
     <div class="empty">달력에서 초록색으로 표시된 날짜를 눌러보세요.</div>
@@ -575,6 +645,7 @@ document.getElementById('sub').innerHTML=`@${DATA.bid} · 방송 기록 ${firstD
 const pf=document.getElementById('pf');
 if(DATA.profile){pf.src=DATA.profile;pf.onerror=()=>pf.style.display='none';}else{pf.style.display='none';}
 document.getElementById('foot').textContent=`데이터 갱신: ${DATA.generated} · 다시보기(VOD) 기준 · SOOP 비공식 API`;
+(function(){const ea=document.getElementById('evalAccK'); if(ea && DATA.evalAcc!=null) ea.innerHTML='🎯 예측 적중률 <b style="color:#f4e4a8">'+DATA.evalAcc+'%</b> <span style="color:var(--muted)">(재현 기준)</span>';})();
 const dows=['일','월','화','수','목','금','토'];
 document.getElementById('dow').innerHTML=
   dows.map((d,i)=>`<div class="dow ${i===0?'sun':i===6?'sat':''}">${d}</div>`).join('');
@@ -626,14 +697,16 @@ function render(){
   for(let d=1;d<=daysInMonth;d++){
     const ds=`${y}-${pad(m+1)}-${pad(d)}`;const list=byDate[ds];const isT=ds===todayStr;
     const dly=`animation-delay:${Math.min((startDow+d-1)*12,320)}ms`;
+    const pv=(DATA.evals && (ds in DATA.evals))?DATA.evals[ds]:null;
+    const predH = pv===null ? '' : `<div class="pred ${pv?'ok':'no'}">${pv?'예측성공!':'예측실패..'}</div>`;
     if(list){
       const totMs=list.reduce((s,b)=>s+(b.duration_ms||0),0);
       const hlabel=totMs>=3600000?(totMs/3600000).toFixed(1).replace(/\.0$/,'')+'시간':Math.round(totMs/60000)+'분';
       const cnt=list.length>1?`<span class="cnt">${list.length}</span>`:'';
-      cells.push(`<div class="cell on ${isT?'today':''}" style="${dly}" data-d="${ds}"><div class="d">${d}</div>${cnt}<div class="hrs">${hlabel}</div></div>`);
+      cells.push(`<div class="cell on ${isT?'today':''}" style="${dly}" data-d="${ds}"><div class="d">${d}</div>${cnt}<div class="hrs">${hlabel}</div>${predH}</div>`);
     }else{
       const off = ds>=firstDate && ds<todayStr;   // 활동 시작 후 ~ 어제까지의 미방송일
-      cells.push(`<div class="cell ${off?'off ':''}${isT?'today':''}" style="${dly}"><div class="d">${d}</div></div>`);
+      cells.push(`<div class="cell ${off?'off ':''}${isT?'today':''}" style="${dly}"><div class="d">${d}</div>${predH}</div>`);
     }
   }
   document.getElementById('cal').innerHTML=cells.join('');
