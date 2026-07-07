@@ -23,6 +23,8 @@ STREAMER_ID = "allblack1019"      # SOOP 방송국 주소 sooplive.com/station/<
 SINCE = "2026-01-01"              # 달력에 표시할 시작일(이 날짜 이후 방송만 달력에 표시)
 PRED_SINCE = "2025-07-01"         # 확률 계산에 쓸 데이터 시작일(달력보다 길게, 약 12개월). 달력엔 안 보이고 예측에만 사용
 EVAL_SINCE = "2026-07-05"         # 예측성공/실패 표시 & 적중률 계산 시작일(이 날부터의 과거 날만 판정)
+NEUTRAL_LOW = 45                  # 예측 불가(유보) 구간 하한(%). 이 값~상한 사이면 성공/실패 판정 안 함(동전던지기 구간)
+NEUTRAL_HIGH = 55                 # 예측 불가(유보) 구간 상한(%)
 VIDEO_FILE = "intro.mp4"          # 인트로 영상 (assets/ 폴더에 넣기)
 BGM_FILE = "bgm.mp3"              # 배경음악 (assets/ 폴더에 넣기)
 SLASH_TIME = 4.0                  # 영상에서 화면이 찢기는 시점(초)
@@ -201,8 +203,10 @@ def compute_evals(broadcasts, eval_since, pred_since, log):
     start = Dt(eval_since) if eval_since else pf
     evals = {}; ok = 0; tot = 0
     d = start
-    while d < today:
+    while d <= today:
         ds = d.isoformat()
+        if d == today and ds not in dateset:
+            break   # 오늘은 방송 확정(초록)일 때만 즉시 판정. 아직 미방송이면 저녁에 켤 수 있어 보류
         if ds in log:
             p_pct = int(log[ds].get("p", 50)); pred = bool(log[ds].get("pred"))   # 그날 기록한 예측(로그 우선)
         else:
@@ -211,9 +215,12 @@ def compute_evals(broadcasts, eval_since, pred_since, log):
                 d += datetime.timedelta(days=1); continue
             p_pct = round(pv * 100); pred = pv >= 0.5
         actual = ds in dateset
-        okk = (pred == actual)
-        evals[ds] = {"ok": okk, "p": p_pct, "pred": pred}
-        ok += 1 if okk else 0; tot += 1
+        if NEUTRAL_LOW <= p_pct <= NEUTRAL_HIGH:          # 45~55%는 예측 불가(유보) → 판정·적중률에서 제외
+            evals[ds] = {"neutral": True, "p": p_pct}
+        else:
+            okk = (pred == actual)
+            evals[ds] = {"ok": okk, "p": p_pct, "pred": pred}
+            ok += 1 if okk else 0; tot += 1
         d += datetime.timedelta(days=1)
     return evals, (round(100 * ok / tot) if tot else 0)
 
@@ -375,9 +382,10 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .cell.off .d{color:#f3c4c4}
   .cell.today{outline:2px solid var(--today);outline-offset:-2px}
   .cell .hrs{margin-top:auto;font-size:11px;color:#7fd3a0;font-weight:600;line-height:1.2}
-  .cell .pred{position:absolute;top:3px;right:3px;z-index:2;font-size:8.5px;font-weight:800;line-height:1.15;padding:1px 4px;border-radius:5px;text-align:right;max-width:78%}
-  .cell .pred.ok{color:#eafff2;background:#0b7a39;border:1px solid #17b352}
+  .cell .pred{position:absolute;top:3px;right:3px;z-index:2;font-size:8.5px;font-weight:800;line-height:1.15;padding:1px 4px;border-radius:5px;text-align:right;max-width:80%;box-shadow:0 1px 3px rgba(0,0,0,.55)}
+  .cell .pred.ok{color:#eafff2;background:#0f9d47;border:1px solid #34e070}
   .cell .pred.no{color:#ffecec;background:#9c1414;border:1px solid #e23c3c}
+  .cell .pred.mid{color:#e9e9e9;background:#4a4f57;border:1px solid #7c828c}
   @media(max-width:560px){.cell .pred{font-size:7px;padding:0 2px;top:2px;right:2px}}
   .cell .cnt{position:absolute;bottom:5px;right:6px;font-size:11px;color:var(--on);font-weight:700}
   .legend{margin:14px 2px;color:var(--muted);font-size:12px;display:flex;gap:16px;align-items:center;flex-wrap:wrap}
@@ -735,7 +743,11 @@ function render(){
     const ds=`${y}-${pad(m+1)}-${pad(d)}`;const list=byDate[ds];const isT=ds===todayStr;
     const dly=`animation-delay:${Math.min((startDow+d-1)*12,320)}ms`;
     const pv=(DATA.evals && (ds in DATA.evals))?DATA.evals[ds]:null;
-    const predH = (pv===null||typeof pv!=='object') ? '' : `<div class="pred ${pv.ok?'ok':'no'}">${pv.p}% ${pv.pred?'뱅온':'노쇼'}예측<br>예측${pv.ok?'성공!':'실패..'}</div>`;
+    let predH='';
+    if(pv && typeof pv==='object'){
+      if(pv.neutral) predH=`<div class="pred mid">${pv.p}%<br>예측유보</div>`;
+      else predH=`<div class="pred ${pv.ok?'ok':'no'}">${pv.p}% ${pv.pred?'뱅온':'노쇼'}예측<br>예측${pv.ok?'성공!':'실패..'}</div>`;
+    }
     if(list){
       const totMs=list.reduce((s,b)=>s+(b.duration_ms||0),0);
       const hlabel=totMs>=3600000?(totMs/3600000).toFixed(1).replace(/\.0$/,'')+'시간':Math.round(totMs/60000)+'분';
