@@ -25,6 +25,7 @@ PRED_SINCE = "2025-07-01"         # 확률 계산에 쓸 데이터 시작일(달
 EVAL_SINCE = "2026-07-05"         # 예측성공/실패 표시 & 적중률 계산 시작일(이 날부터의 과거 날만 판정)
 NEUTRAL_LOW = 45                  # 예측 불가(유보) 구간 하한(%). 이 값~상한 사이면 성공/실패 판정 안 함(동전던지기 구간)
 NEUTRAL_HIGH = 55                 # 예측 불가(유보) 구간 상한(%)
+GA_MEASUREMENT_ID = "G-P7BYWD3VW2"   # Google Analytics GA4 측정 ID (G-XXXXXXXXXX). 비워두면 GA 미삽입
 VIDEO_FILE = "intro.mp4"          # 인트로 영상 (assets/ 폴더에 넣기)
 BGM_FILE = "bgm.mp3"              # 배경음악 (assets/ 폴더에 넣기)
 SLASH_TIME = 4.0                  # 영상에서 화면이 찢기는 시점(초)
@@ -332,6 +333,13 @@ def main():
         h = h.replace("__ODSTEP__", str(OVERDUE_STEP))
         h = h.replace("__ODMAX__", str(OVERDUE_MAX))
         h = h.replace("__LINKS__", json.dumps(LINKS, ensure_ascii=False))
+        if GA_MEASUREMENT_ID:
+            ga = ('<script async src="https://www.googletagmanager.com/gtag/js?id=%s"></script>\n'
+                  '<script>window.dataLayer=window.dataLayer||[];function gtag(){dataLayer.push(arguments);}'
+                  'gtag("js",new Date());gtag("config","%s");</script>') % (GA_MEASUREMENT_ID, GA_MEASUREMENT_ID)
+        else:
+            ga = ""
+        h = h.replace("__GA__", ga)
         h = h.replace("__NICK__", nick or bid)
         h = h.replace("/*__DATA__*/null", json.dumps(payload, ensure_ascii=False))
         return h
@@ -362,6 +370,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>SOOP 방송 달력</title>
+__GA__
 <style>
   :root{
     --bg:#0f1116; --panel:#171a21; --panel2:#1e222b; --line:#2a2f3a;
